@@ -34,8 +34,6 @@ This platform is optimized for macOS environments. Ensure your system meets the 
 To bootstrap a fresh installation workspace on a brand-new machine, download and execute the structural installer engine:
 
 ```bash
-# Initialize installer scripts
-touch install_akasha.sh && chmod +x install_akasha.sh
-
-# Open file to populate script content, then execute:
+git pull origin main
+chmod +x install_akasha.sh
 ./install_akasha.sh
