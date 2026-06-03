@@ -28,12 +28,3 @@ This platform is optimized for macOS environments. Ensure your system meets the 
   - `prompt-toolkit` (Advanced Terminal Formatting & Text Buffering)
 
 ---
-
-## 🚀 Quick Start (New Environments)
-
-To bootstrap a fresh installation workspace on a brand-new machine, download and execute the structural installer engine:
-
-```bash
-git pull origin main
-chmod +x install_akasha.sh
-./install_akasha.sh
