@@ -16,7 +16,6 @@ Stateful Confidence Telemetry Caching: Leverages an isolated local SQLite layer 
 
 Secure SSH Terminal Wrapping: Integrates paramiko under the hood to establish persistent channels, enabling interactive remote execution and full AI-interception workflows over secure connections.
 
-Protected Environment Engineering: Features absolute isolation workflows utilizing dynamic environment injections to guarantee sensitive API tokens never leak into version control logs.
 ---
 
 ## 📦 Prerequisites & System Dependencies
