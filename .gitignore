@@ -1,0 +1,18 @@
+# API Credentials & Local Configuration Contexts
+.env
+.env.local
+*.env
+secrets.txt
+
+# Local SQLite Infrastructure Registries & Runtime States
+.akasha_private.db
+.akasha_history
+
+# Python Virtual Environments and Pre-compiled Binary Trees
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+EOF
