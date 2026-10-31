@@ -1,0 +1,13 @@
+provider:
+  type: ollama
+  model: qwen2.5-coder:14b
+
+security:
+  local_only: true
+  public_llm_access: false
+
+approval:
+  enabled: true
+
+ssh:
+  enrollment_mode: tofu
