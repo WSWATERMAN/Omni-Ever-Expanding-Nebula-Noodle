@@ -1,6 +1,7 @@
 import ollama
 
 from .base import AIProvider
+from ..command_cleaner import clean_command
 
 class OllamaProvider(AIProvider):
 
@@ -33,4 +34,4 @@ Rules:
             ]
         )
 
-        return response["message"]["content"].strip()
+        return clean_command(response["message"]["content"])
