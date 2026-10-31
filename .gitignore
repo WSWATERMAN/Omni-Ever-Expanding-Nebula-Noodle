@@ -16,3 +16,6 @@ __pycache__/
 env/
 venv/
 EOF
+
+# Goyathlay
+.venv-goyathlay/

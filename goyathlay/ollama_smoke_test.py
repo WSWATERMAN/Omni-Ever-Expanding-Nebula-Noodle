@@ -9,7 +9,7 @@ response = ollama.chat(
         },
         {
             "role": "user",
-            "content": "show all listening ports"
+            "content": "show listening ports"
         }
     ]
 )
