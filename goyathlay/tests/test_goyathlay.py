@@ -96,6 +96,17 @@ class GoyathlayCliTests(unittest.TestCase):
 
         return output.getvalue(), provider, cleaner, approval_manager, execution_manager, mocked_input, feedback_manager, command_cache, audit_store, reputation_engine
 
+    def test_dryrun_builds_plan_without_approval_or_execution(self):
+        output, provider, _, approval, execution, _, _, _, _, _ = self.run_cli(
+            ["dryrun> show listening ports", "exit"]
+        )
+        provider.generate_command.assert_called_once_with("show listening ports")
+        approval.review.assert_not_called()
+        execution.execute.assert_not_called()
+        self.assertIn("DRY RUN", output)
+        self.assertIn("Risk:", output)
+        self.assertIn("Targets:", output)
+
     def test_maintenance_cli_lists_adds_and_removes_windows(self):
         manager = Mock()
         manager.enabled = False

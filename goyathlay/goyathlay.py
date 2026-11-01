@@ -45,6 +45,7 @@ if __package__:
     from .db.mssql import MssqlInterpreter
     from .db.mssql_executor import MssqlExecutionError, MssqlExecutor
     from .db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
+    from .planning import ExecutionPlan, render_plan
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -85,6 +86,7 @@ else:  # Support: python goyathlay/goyathlay.py
     from db.mssql import MssqlInterpreter
     from db.mssql_executor import MssqlExecutionError, MssqlExecutor
     from db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
+    from planning import ExecutionPlan, render_plan
 
 
 def _create_provider():
@@ -836,6 +838,43 @@ def main() -> None:
         if raw_prompt.casefold() in ("exit", "quit"):
             return
         if not raw_prompt:
+            continue
+        if raw_prompt.casefold().startswith("dryrun>"):
+            dry_intent = raw_prompt[len("dryrun>"):].strip()
+            if not dry_intent:
+                print("Usage: dryrun> PROMPT")
+                continue
+            dry_targets: tuple[str, ...] = ()
+            try:
+                target_name, generation_prompt, _ = _parse_target(dry_intent)
+                if target_name is not None and host_inventory is not None:
+                    dry_targets = tuple(record.name for record in host_inventory.resolve_target(target_name))
+                elif target_name is not None:
+                    print("Remote target unavailable because the host inventory could not be loaded.")
+                    continue
+                if provider is None:
+                    provider = _create_provider()
+                generated = clean_command(provider.generate_command(generation_prompt))
+                risk = risk_engine.assess(generated)
+                reputation = _get_reputation(reputation_engine, generated)
+                policy = policy_engine.evaluate(
+                    risk.level, reputation.score if reputation is not None else None, current_profile
+                )
+                plan = ExecutionPlan(
+                    intent=dry_intent,
+                    command=generated,
+                    risk=risk.level.name,
+                    reputation=reputation.score if reputation is not None else None,
+                    policy=policy.decision.name,
+                    targets=dry_targets,
+                )
+                print("DRY RUN — no command was approved or executed.")
+                print(render_plan(plan))
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting Goyathlay.")
+                return
+            except Exception as exc:
+                print(f"Unable to create dry-run plan:\n{exc}")
             continue
         if _handle_blocklist_command(raw_prompt, blocklist):
             continue
