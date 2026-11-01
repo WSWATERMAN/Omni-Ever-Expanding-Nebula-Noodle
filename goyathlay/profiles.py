@@ -72,6 +72,7 @@ class ProfileManager:
                         name: _profile_values(profile)
                         for name, profile in _DEFAULT_PROFILES.items()
                     },
+                    "host_overrides": {},
                 }
                 self._save(self._data)
         except OSError as exc:
@@ -107,6 +108,25 @@ class ProfileManager:
         updated["default"] = name
         self._commit(updated)
 
+    def set_host_profile(self, host: str, profile_name: str | None) -> None:
+        """Assign or clear a profile override for one inventory host."""
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("Host name must not be empty.")
+        updated = deepcopy(self._data)
+        if profile_name is None:
+            updated["host_overrides"].pop(host, None)
+        else:
+            self.load_profile(profile_name)
+            updated["host_overrides"][host] = profile_name
+        self._commit(updated)
+
+    def get_profile_for_host(self, host: str) -> PolicyProfile:
+        """Return the host override, falling back to the default profile."""
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("Host name must not be empty.")
+        name = self._data["host_overrides"].get(host, self._data["default"])
+        return self.load_profile(name)
+
     def _commit(self, data: dict[str, Any]) -> None:
         self._save(data)
         self._data = data
@@ -117,8 +137,11 @@ class ProfileManager:
                 data: Any = json.load(stream)
         except (OSError, json.JSONDecodeError) as exc:
             raise ProfileStoreError(f"Could not read policy profiles {self.path}: {exc}") from exc
-        if not isinstance(data, dict) or set(data) != {"default", "profiles"}:
-            raise ProfileStoreError("Profile configuration must contain 'default' and 'profiles'.")
+        if not isinstance(data, dict) or set(data) not in (
+            {"default", "profiles"}, {"default", "profiles", "host_overrides"}
+        ):
+            raise ProfileStoreError("Profile configuration must contain default, profiles, and optional host_overrides.")
+        host_overrides = data.get("host_overrides", {})
         profiles = data["profiles"]
         if not isinstance(data["default"], str) or not isinstance(profiles, dict):
             raise ProfileStoreError("Profile configuration has invalid field types.")
@@ -142,6 +165,14 @@ class ProfileManager:
                 f"Default policy profile is not configured: {data['default']}"
             )
         data["profiles"] = normalized_profiles
+        if not isinstance(host_overrides, dict) or any(
+            not isinstance(host, str) or not host.strip() or not isinstance(profile, str)
+            for host, profile in host_overrides.items()
+        ):
+            raise ProfileStoreError("Host profile overrides must map host names to profile names.")
+        if any(profile not in profiles for profile in host_overrides.values()):
+            raise ProfileNotFoundError("A host override references a profile that is not configured.")
+        data["host_overrides"] = host_overrides
         return data
 
     def _save(self, data: dict[str, Any]) -> None:

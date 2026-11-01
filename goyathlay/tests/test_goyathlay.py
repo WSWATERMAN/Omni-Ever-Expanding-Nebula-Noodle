@@ -57,6 +57,7 @@ class GoyathlayCliTests(unittest.TestCase):
         profile_manager.get_default_profile.return_value = profiles[profile_name]
         profile_manager.list_profiles.return_value = list(profiles.values())
         profile_manager.load_profile.side_effect = profiles.__getitem__
+        profile_manager.get_profile_for_host.side_effect = lambda host: profiles.get(host, profiles[profile_name])
         maintenance_manager = Mock()
         maintenance_manager.enabled = False
         maintenance_manager.list_windows.return_value = []
@@ -512,6 +513,7 @@ class GoyathlayCliTests(unittest.TestCase):
         ]
         profile_manager = Mock()
         profile_manager.get_default_profile.return_value = PolicyProfile("staging", True, True, 25)
+        profile_manager.get_profile_for_host.return_value = PolicyProfile("staging", True, True, 25)
         maintenance_manager = Mock()
         maintenance_manager.is_allowed.return_value = True
         command_blocklist = Mock()

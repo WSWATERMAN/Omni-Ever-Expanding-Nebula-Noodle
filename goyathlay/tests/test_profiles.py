@@ -59,6 +59,26 @@ class ProfileManagerTests(unittest.TestCase):
 
         self.assertEqual(ProfileManager(self.path).get_default_profile().name, "emergency")
 
+    def test_host_override_and_default_fallback_persist(self):
+        self.manager.set_host_profile("server01", "staging")
+        self.assertEqual(self.manager.get_profile_for_host("server01").name, "staging")
+        self.assertEqual(self.manager.get_profile_for_host("server02").name, "production")
+        reloaded = ProfileManager(self.path)
+        self.assertEqual(reloaded.get_profile_for_host("server01").name, "staging")
+        reloaded.set_host_profile("server01", None)
+        self.assertEqual(reloaded.get_profile_for_host("server01").name, "production")
+
+    def test_host_override_rejects_unknown_profile(self):
+        with self.assertRaises(ProfileNotFoundError):
+            self.manager.set_host_profile("server01", "missing")
+
+    def test_loads_legacy_config_without_overrides(self):
+        config = json.loads(self.path.read_text())
+        config.pop("host_overrides", None)
+        self.path.write_text(json.dumps(config), encoding="utf-8")
+        loaded = ProfileManager(self.path)
+        self.assertEqual(loaded.get_profile_for_host("server01").name, "production")
+
     def test_save_profile_preserves_existing_profiles(self):
         custom = PolicyProfile("qa", True, True, 10)
 

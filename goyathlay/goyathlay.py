@@ -173,6 +173,22 @@ def _display_blocked_command(rule: str, command: str) -> None:
     print(f"Command:\n{command}")
 
 
+def _most_restrictive_policy(policies: list[tuple[str | None, PolicyProfile, PolicyResult]]) -> PolicyResult:
+    """Combine host decisions conservatively: any denial blocks the operation."""
+    rank = {
+        PolicyDecision.ALLOW: 0,
+        PolicyDecision.REQUIRE_EXTRA_CONFIRMATION: 1,
+        PolicyDecision.DENY: 2,
+    }
+    decision = max((result.decision for _host, _profile, result in policies), key=rank.__getitem__)
+    reasons = []
+    for host, profile, result in policies:
+        if result.decision is not PolicyDecision.ALLOW:
+            label = f"{host} ({profile.name})" if host else profile.name
+            reasons.extend(f"{label}: {reason}" for reason in result.reasons)
+    return PolicyResult(decision, reasons)
+
+
 def _maintenance_allowed(manager: MaintenanceManager, profile_name: str) -> bool:
     """Check the active local-time window and explain a denial."""
     now = datetime.now().astimezone()
@@ -911,6 +927,23 @@ def main() -> None:
                 except ProfileStoreError as exc:
                     print(f"Unable to switch profile:\n{exc}")
             continue
+        if command_name == "host-profile":
+            if profile_manager is None:
+                print("Policy profiles are unavailable.")
+            elif len(command_parts) != 2:
+                print('Usage: host-profile HOST PROFILE | host-profile HOST default')
+            else:
+                try:
+                    host_name, profile_name = command_parts[1].split(maxsplit=1)
+                    override = None if profile_name.casefold() == "default" else profile_name
+                    profile_manager.set_host_profile(host_name, override)
+                    effective = profile_manager.get_profile_for_host(host_name)
+                    print(f"Policy Profile for {host_name}: {effective.name}")
+                except ValueError:
+                    print('Usage: host-profile HOST PROFILE | host-profile HOST default')
+                except (ProfileNotFoundError, ProfileStoreError) as exc:
+                    print(f"Unable to set host profile:\n{exc}")
+            continue
         if current_profile is None:
             print("Command blocked because no policy profile is available.")
             continue
@@ -1011,11 +1044,20 @@ def main() -> None:
         if authorization is AuthorizationDecision.DENY:
             print("Execution blocked.")
             continue
-        policy = policy_engine.evaluate(
-            assessment.level,
-            reputation.score if reputation is not None else None,
-            current_profile,
+        reputation_score = reputation.score if reputation is not None else None
+        policy_profiles = (
+            [(record.name, profile_manager.get_profile_for_host(record.name)) for record in target_records]
+            if target_records and profile_manager is not None
+            else [(None, current_profile)]
         )
+        policies = [
+            (host, profile, policy_engine.evaluate(assessment.level, reputation_score, profile))
+            for host, profile in policy_profiles
+        ]
+        policy = _most_restrictive_policy(policies)
+        if target_records:
+            for host, profile, result in policies:
+                print(f"Host Policy: {host} -> {profile.name} ({result.decision.name})")
         _display_command_policy(
             command,
             assessment.level,
@@ -1058,11 +1100,12 @@ def main() -> None:
             if final_authorization is AuthorizationDecision.DENY:
                 print("Execution blocked.")
                 continue
-            final_policy = policy_engine.evaluate(
-                final_assessment.level,
-                final_reputation.score if final_reputation is not None else None,
-                current_profile,
-            )
+            final_score = final_reputation.score if final_reputation is not None else None
+            final_policies = [
+                (host, profile, policy_engine.evaluate(final_assessment.level, final_score, profile))
+                for host, profile in policy_profiles
+            ]
+            final_policy = _most_restrictive_policy(final_policies)
             _display_command_policy(
                 approved_command,
                 final_assessment.level,
