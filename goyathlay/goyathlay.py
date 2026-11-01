@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Interactive, local-first Goyathlay command line application."""
 
+import os
 import shlex
+import sys
 from dataclasses import replace
 from datetime import datetime
 
@@ -46,6 +48,13 @@ if __package__:
     from .db.mssql_executor import MssqlExecutionError, MssqlExecutor
     from .db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
     from .planning import ExecutionPlan, render_plan
+    from .feedback import FeedbackStore
+    from .ui.banner import render_banner
+    from .ui.hotkeys import ConsoleState, HotkeyManager
+    from .ui.prompt import read_prompt
+    from .ui.statusbar import StatusBar
+    from .ui.statusbar import render_status_output
+    from .ui.views import render_database_plan, render_execution_plan
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -87,6 +96,13 @@ else:  # Support: python goyathlay/goyathlay.py
     from db.mssql_executor import MssqlExecutionError, MssqlExecutor
     from db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
     from planning import ExecutionPlan, render_plan
+    from feedback import FeedbackStore
+    from ui.banner import render_banner
+    from ui.hotkeys import ConsoleState, HotkeyManager
+    from ui.prompt import read_prompt
+    from ui.statusbar import StatusBar
+    from ui.statusbar import render_status_output
+    from ui.views import render_database_plan, render_execution_plan
 
 
 def _create_provider():
@@ -428,6 +444,7 @@ def _handle_database_prompt(
     approval_manager: ApprovalManager,
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
+    show_risk: bool = True,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect query feedback."""
     parsed = _parse_database_prompt(raw_prompt)
@@ -453,12 +470,12 @@ def _handle_database_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print("Database: PostgreSQL")
-    print(f"Profile: {profile.name}")
-    print(f"Host: {profile.host}")
-    print("Generated SQL:")
-    print(query.sql)
-    print(f"Risk: {assessment.level.name}")
+    print(render_database_plan(
+        engine="PostgreSQL", profile=profile.name, sql=query.sql,
+        risk=assessment.level.name, validation="PASSED",
+        target=f"{profile.host}:{profile.port}/{profile.database}",
+        show_risk=show_risk,
+    ))
     try:
         approved, approved_sql = approval_manager.review(query.sql, display_command=False)
     except KeyboardInterrupt:
@@ -516,6 +533,7 @@ def _handle_sqlite_prompt(
     approval_manager: ApprovalManager,
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
+    show_risk: bool = True,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, approve, execute, audit, and collect feedback for SQLite."""
     parsed = _parse_sqlite_prompt(raw_prompt)
@@ -541,11 +559,12 @@ def _handle_sqlite_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print(f"Profile:\n{profile.name}")
-    print(f"Database:\n{profile.database}")
-    print("Generated SQL:")
-    print(query.sql)
-    print(f"Risk:\n{assessment.level.name}")
+    print(render_database_plan(
+        engine="SQLite", profile=profile.name, sql=query.sql,
+        risk=assessment.level.name, validation="PASSED",
+        target=profile.database,
+        show_risk=show_risk,
+    ))
     try:
         approved, approved_sql = approval_manager.review(query.sql, display_command=False)
     except KeyboardInterrupt:
@@ -606,6 +625,7 @@ def _handle_mssql_prompt(
     approval_manager: ApprovalManager,
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
+    show_risk: bool = True,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect SQL Server feedback."""
     parsed = _parse_mssql_prompt(raw_prompt)
@@ -631,12 +651,12 @@ def _handle_mssql_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print("Database:\nMicrosoft SQL Server")
-    print(f"Profile:\n{profile.name}")
-    print(f"Host:\n{profile.server}:{profile.port}")
-    print("Generated SQL:")
-    print(query.sql)
-    print(f"Risk:\n{assessment.level.name}")
+    print(render_database_plan(
+        engine="Microsoft SQL Server", profile=profile.name, sql=query.sql,
+        risk=assessment.level.name, validation="PASSED",
+        target=f"{profile.server}:{profile.port}/{profile.database}",
+        show_risk=show_risk,
+    ))
     try:
         approved, approved_sql = approval_manager.review(query.sql, display_command=False)
     except KeyboardInterrupt:
@@ -734,28 +754,92 @@ def _display_command_policy(
     policy: PolicyResult,
     target_host: str | None = None,
     profile: PolicyProfile | None = None,
+    intent: str = "(see prompt)",
+    role: str = "ADMIN",
+    show_risk: bool = True,
 ) -> None:
     """Display the assessed command, its history, and the policy outcome."""
-    print("Generated Command:")
-    print(command)
-    if target_host is not None:
-        print(f"\nExecution Target:\nRemote host: {target_host}")
-    if profile is not None:
-        print(f"\nProfile:\n{profile.name}")
-    print(f"\nRisk Level:\n{risk_level.name}")
-    print("Reasons:")
-    for reason in risk_reasons or ["No known risky patterns detected."]:
-        print(f"- {reason}")
-    print(f"\nReputation:\n{reputation.score:g}" if reputation else "\nReputation:\nUnknown")
-    if reputation:
-        print(f"Successes:\n{reputation.success_count}")
-        print(f"Failures:\n{reputation.failure_count}")
-        print(f"Dangerous:\n{reputation.dangerous_count}")
-    print(f"\nPolicy:\n{policy.decision.name.replace('_', ' ')}")
-    print(f"Decision:\n{policy.decision.name.replace('_', ' ')}")
-    print("Policy Reasons:")
-    for reason in policy.reasons or ["No policy concerns detected."]:
-        print(f"- {reason}")
+    print(render_execution_plan(
+        intent=intent, command=command,
+        targets=tuple(item.strip() for item in target_host.split(",")) if target_host else (),
+        engine=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
+        profile=profile.name if profile else "unavailable", role=role,
+        risk=risk_level.name, reasons=risk_reasons,
+        reputation=reputation.score if reputation else None,
+        policy=policy.decision.name.replace("_", " "), policy_reasons=policy.reasons,
+        show_risk=show_risk,
+    ))
+
+
+def _handle_operator_command(
+    command: str, *, profile_manager: ProfileManager | None,
+    current_profile: PolicyProfile | None, host_inventory: HostInventory | None,
+    command_cache: CommandCache | None, audit_store: AuditStore | None,
+    show_audit_details: bool = False,
+) -> bool:
+    """Handle the console's status, help, inventory, audit, and history views."""
+    name = command.strip().casefold()
+    if name == "help":
+        print("Core Commands:\nstatus\nprofiles\nprofile <name>\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
+        return True
+    if name == "status":
+        try:
+            host_count = len(host_inventory.list_hosts()) if host_inventory else 0
+            group_count = len(host_inventory.list_groups()) if host_inventory else 0
+            profile_count = len(profile_manager.list_profiles()) if profile_manager else 0
+        except Exception:
+            host_count = group_count = profile_count = 0
+        print(render_status_output(
+            engine=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
+            profile=current_profile.name if current_profile else "unavailable",
+            role="ADMIN", cache_enabled=command_cache is not None,
+            audit_enabled=True, tofu_enabled=True, hosts=host_count,
+            groups=group_count, profiles=profile_count,
+        ))
+        return True
+    if name in {"inventory", "hosts", "groups"}:
+        if host_inventory is None:
+            print("Host inventory is unavailable.")
+            return True
+        if name in {"inventory", "hosts"}:
+            records = host_inventory.list_hosts()
+            print(f"Hosts: {len(records)}")
+            for record in records:
+                print(f"- {record.name}: {record.username}@{record.hostname}:{record.port}")
+        if name in {"inventory", "groups"}:
+            groups = host_inventory.list_groups()
+            print(f"Groups: {len(groups)}")
+            for group, members in groups.items():
+                print(f"- {group}: {', '.join(members)}")
+        return True
+    if name == "audit":
+        try:
+            store = audit_store or AuditStore()
+            records = store.load()
+            print("Audit History:")
+            if show_audit_details:
+                for record in records[-20:]:
+                    print(f"- {record.timestamp} {record.approval_result} rc={record.return_code} {record.command}")
+            else:
+                passed = sum(record.success for record in records)
+                print(f"Records: {len(records)} | Successful: {passed} | Failed: {len(records) - passed}")
+            if not records:
+                print("No audit records.")
+        except Exception as exc:
+            print(f"Audit history unavailable:\n{exc}")
+        return True
+    if name == "history":
+        try:
+            records = FeedbackStore().load_history()
+            print("Feedback History:")
+            for record in records[-20:]:
+                print(f"- {record['timestamp']} {record['result']} {record['command']}")
+            if not records:
+                print("No feedback records.")
+        except Exception as exc:
+            print(f"Feedback history unavailable:\n{exc}")
+        return True
+    return False
 
 
 def _append_audit_record(
@@ -790,6 +874,9 @@ def _append_audit_record(
 
 def main() -> None:
     """Run the prompt, generate, approve, and execute loop."""
+    if sys.argv[1:] == ["--version"]:
+        print("Goyathlay v1.0.0")
+        return
     provider = None
     try:
         ollama_error = _check_ollama_installation()
@@ -852,23 +939,50 @@ def main() -> None:
         mssql_profile_manager = None
         print(f"MSSQL profiles unavailable:\n{exc}")
 
-    print("-" * 36)
-    print("GOYATHLAY")
-    print("-" * 36)
-    if current_profile is not None:
-        print(f"Current Profile: {current_profile.name}")
-    print("Type 'exit' or 'quit' to leave.")
+    try:
+        profile_names = [item.name for item in profile_manager.list_profiles()] if profile_manager else []
+    except Exception:
+        profile_names = []
+    console_state = ConsoleState(
+        profile_manager=profile_manager,
+        current_profile=current_profile,
+        profile_names=profile_names,
+        inventory=host_inventory,
+        engine=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
+        role=user_context.role.name,
+    )
+    hotkeys = HotkeyManager(console_state)
+    statusbar = StatusBar(console_state)
+    print(render_banner(
+        engine=console_state.engine,
+        profile=current_profile.name if current_profile else "unavailable",
+        role=user_context.role.name,
+        audit_enabled=True,
+        tofu_enabled=True,
+    ))
+    print("Type 'help' for commands, or 'exit' to leave.")
 
     while True:
         try:
-            raw_prompt = input("goyathlay> ").strip()
+            raw_prompt = read_prompt(
+                current_profile.name if current_profile else "unavailable",
+                hotkeys=hotkeys,
+                statusbar=statusbar,
+            ).strip()
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
             return
 
+        current_profile = console_state.current_profile
         if raw_prompt.casefold() in ("exit", "quit"):
             return
         if not raw_prompt:
+            continue
+        if _handle_operator_command(
+            raw_prompt, profile_manager=profile_manager, current_profile=current_profile,
+            host_inventory=host_inventory, command_cache=command_cache, audit_store=audit_store,
+            show_audit_details=console_state.show_audit_details,
+        ):
             continue
         if raw_prompt.casefold().startswith("dryrun>"):
             dry_intent = raw_prompt[len("dryrun>"):].strip()
@@ -936,6 +1050,7 @@ def main() -> None:
                 try:
                     profile_manager.set_default_profile(command_parts[1])
                     current_profile = profile_manager.load_profile(command_parts[1])
+                    console_state.current_profile = current_profile
                     print(f"Current Profile: {current_profile.name}")
                 except ProfileNotFoundError as exc:
                     print(exc)
@@ -973,6 +1088,7 @@ def main() -> None:
             approval_manager,
             risk_engine,
             audit_store,
+            console_state.show_risk,
         )
         if handled_database:
             continue
@@ -982,11 +1098,13 @@ def main() -> None:
             approval_manager,
             risk_engine,
             audit_store,
+            console_state.show_risk,
         )
         if handled_sqlite:
             continue
         handled_mssql, audit_store = _handle_mssql_prompt(
-            raw_prompt, mssql_profile_manager, approval_manager, risk_engine, audit_store
+            raw_prompt, mssql_profile_manager, approval_manager, risk_engine, audit_store,
+            console_state.show_risk,
         )
         if handled_mssql:
             continue
@@ -1032,11 +1150,18 @@ def main() -> None:
         )
 
         try:
-            cached = command_cache.get_verified(cache_intent) if command_cache is not None else None
+            cached = (
+                command_cache.get_verified(cache_intent)
+                if command_cache is not None and not console_state.cache_bypass
+                else None
+            )
             use_cached = cached is not None and _confirm_cached_command(cache_intent, cached.command)
             if use_cached:
                 command = clean_command(cached.command)
             else:
+                if console_state.ai_bypass:
+                    print("AI generation bypass is enabled and no verified cached command was selected.")
+                    continue
                 if provider is None:
                     provider = _create_provider()
                 generated_command = provider.generate_command(prompt)
@@ -1081,6 +1206,9 @@ def main() -> None:
             policy,
             target_display,
             current_profile,
+            intent=prompt,
+            role=user_context.role.name,
+            show_risk=console_state.show_risk,
         )
         if policy.decision is PolicyDecision.DENY:
             print("Execution blocked.")
@@ -1129,6 +1257,9 @@ def main() -> None:
                 final_policy,
                 target_display,
                 current_profile,
+                intent=prompt,
+                role=user_context.role.name,
+                show_risk=console_state.show_risk,
             )
             if final_policy.decision is PolicyDecision.DENY:
                 print("Execution blocked.")

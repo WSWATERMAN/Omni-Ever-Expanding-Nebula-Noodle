@@ -97,6 +97,18 @@ class GoyathlayCliTests(unittest.TestCase):
 
         return output.getvalue(), provider, cleaner, approval_manager, execution_manager, mocked_input, feedback_manager, command_cache, audit_store, reputation_engine
 
+    def test_version_flag_exits_before_startup_checks(self):
+        output = io.StringIO()
+        with patch.object(goyathlay.sys, "argv", ["goyathlay.py", "--version"]), redirect_stdout(output):
+            goyathlay.main()
+        self.assertIn("Goyathlay v1.0.0", output.getvalue())
+
+    def test_startup_displays_ollama_install_guidance(self):
+        guidance = "Ollama Python package is not installed.\nRun:\npip install ollama"
+        with patch.object(goyathlay, "_check_ollama_installation", return_value=guidance):
+            output, *_ = self.run_cli(["exit"])
+        self.assertIn(guidance, output)
+
     def test_dryrun_builds_plan_without_approval_or_execution(self):
         output, provider, _, approval, execution, _, _, _, _, _ = self.run_cli(
             ["dryrun> show listening ports", "exit"]

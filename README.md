@@ -16,37 +16,91 @@ No public LLM provider is used. Ollama itself must be available locally. SSH, da
 ## Install and run
 
 ```sh
-python3 -m venv .venv-goyathlay
+python3 scripts/install_goyathlay.py
+# or: ./scripts/install_goyathlay.sh
 source .venv-goyathlay/bin/activate
-pip install -r requirements.txt
-python -c "import ollama; print('OK')"
-ollama pull qwen2.5-coder:7b
-export GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b
-python -m goyathlay.goyathlay
+python3 -m goyathlay.goyathlay
 ```
 
-The provider defaults to `qwen2.5-coder:14b`. Set `GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b` (or another locally pulled model) to select a different model. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
+The installer requires Python 3.12+, repairs or creates `.venv-goyathlay`, installs the dependencies in the root `requirements.txt`, checks Ollama, and pulls `qwen2.5-coder:7b` if missing. It validates a local command-generation smoke test and does not execute the generated command. A rebuilt environment is staged and only replaces the current venv after validation succeeds. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
 
-At startup, Goyathlay reports a missing Ollama Python package with an installation command. Before generating a command, it also checks that the local Ollama daemon responds and that the selected model is installed. Install the `ollama` Python package in the same activated environment used to launch Goyathlay.
+The provider defaults to `qwen2.5-coder:14b`. The installer uses `qwen2.5-coder:7b` for its required smoke test. Set `GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b` (or another locally pulled model) when launching to select the 7B model. Before generating a command, the CLI checks that the Python package, local Ollama daemon, and configured model are available.
+
+Successful installer output ends with:
+
+```text
+====================================
+GOYATHLAY INSTALLATION COMPLETE
+====================================
+Python: OK
+Virtual Environment: OK
+Dependencies: OK
+Ollama: OK
+Model: OK
+Runtime: OK
+```
 
 On macOS, the system commonly provides `python3` but no `python` command. A freshly created and activated virtual environment includes its own `python` command. You can also use `python3` explicitly after activation. To run without activating the environment, use `python3 -m venv .venv-goyathlay` once, install the requirements with `.venv-goyathlay/bin/python -m pip install -r goyathlay/requirements.txt`, then launch with `.venv-goyathlay/bin/python -m goyathlay.goyathlay`.
 
-Virtual environments are specific to their Python installation and operating system; do not copy one between machines. If `.venv-goyathlay` was copied from another host, recreate it on this Mac with `python3 -m venv --clear .venv-goyathlay`, then repeat the install commands above. Alternatively, run `./run_goyathlay.sh`, which selects `python` when available and otherwise uses `python3`.
+Virtual environments are specific to their Python installation and operating system; do not copy one between machines. The installer detects and repairs a stale or broken `.venv-goyathlay`. Alternatively, `./run_goyathlay.sh` selects `python` when available and otherwise uses `python3`.
 
 ## Example
 
 ```text
-goyathlay> show listening ports
-Generated Command:
+🚀 Goyathlay - Autonomous Operations Platform Initialized Successfully
+Engine: qwen2.5-coder:7b
+Profile: production
+Role: ADMIN
+Audit: Enabled
+TOFU: Enabled
+
+goyathlay(production) ▷▶ show listening ports
+----------------------------------------------------
+EXECUTION PLAN
+----------------------------------------------------
+Intent:
+show listening ports
+
+Command:
 ss -tulpn
-Risk: LOW
-...
+
+Profile:
+production
+
+Role:
+ADMIN
+
+Risk:
+LOW
+
+Reputation:
+Unknown
+
+Policy:
+ALLOW
+----------------------------------------------------
 [A] Approve
 [E] Edit
 [C] Cancel
 Selection: A
 Return Code: 0
 ```
+
+On an interactive terminal, the prompt_toolkit footer displays live profile,
+role, cache, audit, TOFU, CPU, and memory status. CPU and memory show `n/a`
+when the optional `psutil` package is unavailable. Ctrl+B toggles cache lookup,
+Ctrl+K enables cache-only operation (no Ollama calls), Ctrl+R hides or shows
+risk detail while enforcement remains active, Ctrl+P cycles policy profiles,
+Ctrl+T toggles audit detail mode, Ctrl+I shows the inventory summary, and
+Ctrl+H displays help. The footer shortcuts require `prompt_toolkit` installed
+from `goyathlay/requirements.txt`; non-interactive stdin uses ordinary input.
+
+Useful operator commands include `status`, `help`, `inventory`, `hosts`,
+`groups`, `audit`, and `history`, in addition to the existing profile, blocklist,
+maintenance, database, and remote-target commands. Database operations use the
+same plain-text plan framing with engine, profile, SQL, risk, and validation
+status. A network plan renderer is available for future network interpreter
+integration; this UX update does not add network interpreter commands.
 
 The `dryrun>` prefix previews a generated command and local policy result without approving or executing it:
 

@@ -1,3 +1,4 @@
 # Core CLI dependencies. Ollama inference remains local.
 ollama
 paramiko
+prompt_toolkit
