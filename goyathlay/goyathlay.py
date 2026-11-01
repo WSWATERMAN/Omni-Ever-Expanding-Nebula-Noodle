@@ -98,6 +98,15 @@ def _create_provider():
     return OllamaProvider()
 
 
+def _check_ollama_installation() -> str | None:
+    """Return package-install guidance for startup when the SDK is missing."""
+    if __package__:
+        from .providers.ollama_provider import ollama_package_error
+    else:
+        from providers.ollama_provider import ollama_package_error
+    return ollama_package_error()
+
+
 def _confirm_cached_command(intent: str, command: str) -> bool:
     """Ask whether to use a verified command instead of querying Ollama."""
     print("Verified command found.")
@@ -782,6 +791,12 @@ def _append_audit_record(
 def main() -> None:
     """Run the prompt, generate, approve, and execute loop."""
     provider = None
+    try:
+        ollama_error = _check_ollama_installation()
+    except ImportError:
+        ollama_error = "Ollama Python package is not installed.\nRun:\npip install ollama"
+    if ollama_error:
+        print(ollama_error)
     approval_manager = ApprovalManager()
     execution_manager = ExecutionManager()
     risk_engine = RiskEngine()

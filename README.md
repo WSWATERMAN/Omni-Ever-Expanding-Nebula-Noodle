@@ -16,15 +16,22 @@ No public LLM provider is used. Ollama itself must be available locally. SSH, da
 ## Install and run
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -r goyathlay/requirements.txt
+python3 -m venv .venv-goyathlay
+source .venv-goyathlay/bin/activate
+pip install -r requirements.txt
+python -c "import ollama; print('OK')"
 ollama pull qwen2.5-coder:7b
 export GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b
-python3 goyathlay/goyathlay.py
+python -m goyathlay.goyathlay
 ```
 
 The provider defaults to `qwen2.5-coder:14b`. Set `GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b` (or another locally pulled model) to select a different model. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
+
+At startup, Goyathlay reports a missing Ollama Python package with an installation command. Before generating a command, it also checks that the local Ollama daemon responds and that the selected model is installed. Install the `ollama` Python package in the same activated environment used to launch Goyathlay.
+
+On macOS, the system commonly provides `python3` but no `python` command. A freshly created and activated virtual environment includes its own `python` command. You can also use `python3` explicitly after activation. To run without activating the environment, use `python3 -m venv .venv-goyathlay` once, install the requirements with `.venv-goyathlay/bin/python -m pip install -r goyathlay/requirements.txt`, then launch with `.venv-goyathlay/bin/python -m goyathlay.goyathlay`.
+
+Virtual environments are specific to their Python installation and operating system; do not copy one between machines. If `.venv-goyathlay` was copied from another host, recreate it on this Mac with `python3 -m venv --clear .venv-goyathlay`, then repeat the install commands above. Alternatively, run `./run_goyathlay.sh`, which selects `python` when available and otherwise uses `python3`.
 
 ## Example
 
