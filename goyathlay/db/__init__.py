@@ -10,6 +10,14 @@ from .profiles import (
     DbProfile,
     DbProfileStore,
 )
+from .sqlite import SqliteInterpreter
+from .sqlite_executor import QueryResult, SqliteExecutionError, SqliteExecutor
+from .sqlite_profiles import (
+    SqliteProfile,
+    SqliteProfileError,
+    SqliteProfileManager,
+    SqliteProfileNotFoundError,
+)
 from .validator import QueryValidator, ValidationResult
 
 __all__ = [
@@ -25,7 +33,15 @@ __all__ = [
     "PostgresExecutionResult",
     "PostgresExecutor",
     "PostgresInterpreter",
+    "QueryResult",
     "QueryValidator",
+    "SqliteExecutionError",
+    "SqliteExecutor",
+    "SqliteInterpreter",
+    "SqliteProfile",
+    "SqliteProfileError",
+    "SqliteProfileManager",
+    "SqliteProfileNotFoundError",
     "UnsupportedIntentError",
     "ValidationResult",
 ]

@@ -179,6 +179,7 @@ class PostgresCliIntegrationTests(unittest.TestCase):
             patch.object(goyathlay, "CommandBlocklist"),
             patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
             patch.object(goyathlay, "PostgresConnectionManager", return_value=database_manager),
+            patch.object(goyathlay, "SqliteProfileManager", return_value=Mock()),
             patch.object(goyathlay, "PostgresExecutor", return_value=executor),
             patch("builtins.input", side_effect=["db> prod show tables", "exit"]),
             redirect_stdout(output),

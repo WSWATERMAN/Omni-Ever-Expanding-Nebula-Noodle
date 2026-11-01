@@ -27,6 +27,7 @@ class QueryValidator:
         {
             "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER",
             "CREATE", "GRANT", "REVOKE", "COPY", "CALL", "DO", "INTO",
+            "ATTACH", "DETACH", "VACUUM",
         }
     )
 

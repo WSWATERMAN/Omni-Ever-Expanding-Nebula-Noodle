@@ -34,6 +34,14 @@ if __package__:
         PostgresExecutor,
         PostgresInterpreter,
     )
+    from .db.sqlite import SqliteInterpreter
+    from .db.sqlite_executor import SqliteExecutionError, SqliteExecutor
+    from .db.sqlite_profiles import (
+        SqliteProfile,
+        SqliteProfileError,
+        SqliteProfileManager,
+        SqliteProfileNotFoundError,
+    )
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -62,6 +70,14 @@ else:  # Support: python goyathlay/goyathlay.py
         PostgresExecutionError,
         PostgresExecutor,
         PostgresInterpreter,
+    )
+    from db.sqlite import SqliteInterpreter
+    from db.sqlite_executor import SqliteExecutionError, SqliteExecutor
+    from db.sqlite_profiles import (
+        SqliteProfile,
+        SqliteProfileError,
+        SqliteProfileManager,
+        SqliteProfileNotFoundError,
     )
 
 
@@ -231,6 +247,39 @@ def _handle_db_profile_command(raw_command: str, manager: PostgresConnectionMana
     return False
 
 
+def _handle_sqlite_profile_command(raw_command: str, manager: SqliteProfileManager | None) -> bool:
+    """Handle SQLite profile listing and default selection commands."""
+    parts = raw_command.strip().split()
+    if not parts or parts[0].casefold() != "sqlite":
+        return False
+    if len(parts) == 2 and parts[1].casefold() == "profiles":
+        if manager is None:
+            print("SQLite profiles are unavailable.")
+            return True
+        print("SQLite Profiles:")
+        default_name = manager.default_name
+        profiles = manager.list_profiles()
+        for profile in profiles:
+            marker = " (default)" if profile.name == default_name else ""
+            print(f"- {profile.name}: {profile.database}{marker}")
+        if not profiles:
+            print("No SQLite profiles configured.")
+        return True
+    if len(parts) == 3 and parts[1].casefold() == "profile":
+        if manager is None:
+            print("SQLite profiles are unavailable.")
+            return True
+        try:
+            manager.set_default_profile(parts[2])
+            print(f"Current SQLite Profile: {manager.get_default_profile().name}")
+        except SqliteProfileNotFoundError as exc:
+            print(exc)
+        except SqliteProfileError as exc:
+            print(f"Unable to select SQLite profile:\n{exc}")
+        return True
+    return False
+
+
 def _parse_database_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
     """Return the optional profile and intent from a `db>` prompt."""
     if not raw_prompt.lstrip().casefold().startswith("db>"):
@@ -244,15 +293,31 @@ def _parse_database_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
     return (first, remainder.strip() if separator else "")
 
 
+def _parse_sqlite_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
+    """Return an optional profile name and intent from a `sqlite>` prompt."""
+    stripped = raw_prompt.lstrip()
+    if not stripped.casefold().startswith("sqlite>"):
+        return None
+    body = stripped[len("sqlite>"):].strip()
+    if not body:
+        return (None, "")
+    first, separator, remainder = body.partition(" ")
+    if first.casefold() in {"show", "count"}:
+        return (None, body)
+    return (first, remainder.strip() if separator else "")
+
+
 def _append_database_audit(
     store: AuditStore | None,
     *,
     intent: str,
     query: str,
     profile: str,
-    host: str,
+    host: str | None,
     row_count: int | None,
     success: bool,
+    engine: str = "postgres",
+    database_path: str | None = None,
 ) -> AuditStore | None:
     """Append one approved database query execution outcome."""
     try:
@@ -270,6 +335,8 @@ def _append_database_audit(
                 host=host,
                 database_profile=profile,
                 row_count=row_count,
+                database_engine=engine,
+                database_path=database_path,
             )
         )
     except AuditStoreError as exc:
@@ -362,6 +429,96 @@ def _handle_database_prompt(
         print("\nExiting Goyathlay.")
     except FeedbackStoreError as exc:
         print(f"Unable to store database feedback:\n{exc}")
+    return True, audit_store
+
+
+def _handle_sqlite_prompt(
+    raw_prompt: str,
+    manager: SqliteProfileManager | None,
+    approval_manager: ApprovalManager,
+    risk_engine: RiskEngine,
+    audit_store: AuditStore | None,
+) -> tuple[bool, AuditStore | None]:
+    """Translate, approve, execute, audit, and collect feedback for SQLite."""
+    parsed = _parse_sqlite_prompt(raw_prompt)
+    if parsed is None:
+        return False, audit_store
+    if manager is None:
+        print("SQLite execution is unavailable because profiles could not be loaded.")
+        return True, audit_store
+    profile_name, intent = parsed
+    if not intent:
+        print("Usage: sqlite> [PROFILE] show tables")
+        return True, audit_store
+    try:
+        profile = manager.load_profile(profile_name) if profile_name else manager.get_default_profile()
+        interpreter = SqliteInterpreter()
+        query = interpreter.translate(intent)
+    except (SqliteProfileError, ValueError) as exc:
+        print(f"Unable to prepare SQLite query:\n{exc}")
+        return True, audit_store
+
+    validation = interpreter.validate(query.sql)
+    if not validation.allowed:
+        print(f"SQL validation blocked execution:\n{validation.reason}")
+        return True, audit_store
+    assessment = risk_engine.assess(query.sql)
+    print(f"Profile:\n{profile.name}")
+    print(f"Database:\n{profile.database}")
+    print("Generated SQL:")
+    print(query.sql)
+    print(f"Risk:\n{assessment.level.name}")
+    try:
+        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+        return True, audit_store
+    if not approved or approved_sql is None:
+        print("SQLite query cancelled.")
+        return True, audit_store
+
+    final_validation = interpreter.validate(approved_sql)
+    if not final_validation.allowed:
+        print(f"SQL validation blocked execution:\n{final_validation.reason}")
+        return True, audit_store
+    try:
+        result = SqliteExecutor().execute(profile, approved_sql)
+    except SqliteExecutionError as exc:
+        audit_store = _append_database_audit(
+            audit_store,
+            intent=intent,
+            query=approved_sql,
+            profile=profile.name,
+            host=None,
+            row_count=None,
+            success=False,
+            engine="sqlite",
+            database_path=profile.database,
+        )
+        print(f"SQLite execution failed:\n{exc}")
+        return True, audit_store
+
+    print(f"Columns: {', '.join(result.columns)}")
+    print(f"Rows: {result.row_count}")
+    for row in result.rows:
+        print("\t".join("NULL" if value is None else str(value) for value in row))
+    audit_store = _append_database_audit(
+        audit_store,
+        intent=intent,
+        query=approved_sql,
+        profile=profile.name,
+        host=None,
+        row_count=result.row_count,
+        success=True,
+        engine="sqlite",
+        database_path=profile.database,
+    )
+    try:
+        FeedbackManager().review(intent, approved_sql)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+    except FeedbackStoreError as exc:
+        print(f"Unable to store SQLite feedback:\n{exc}")
     return True, audit_store
 
 
@@ -521,6 +678,11 @@ def main() -> None:
     except DatabaseProfileError as exc:
         database_manager = None
         print(f"Database profiles unavailable:\n{exc}")
+    try:
+        sqlite_profile_manager = SqliteProfileManager()
+    except SqliteProfileError as exc:
+        sqlite_profile_manager = None
+        print(f"SQLite profiles unavailable:\n{exc}")
 
     print("-" * 36)
     print("GOYATHLAY")
@@ -545,6 +707,8 @@ def main() -> None:
         if _handle_maintenance_command(raw_prompt, maintenance_manager):
             continue
         if _handle_db_profile_command(raw_prompt, database_manager):
+            continue
+        if _handle_sqlite_profile_command(raw_prompt, sqlite_profile_manager):
             continue
         command_parts = raw_prompt.split(maxsplit=1)
         command_name = command_parts[0].casefold()
@@ -587,6 +751,15 @@ def main() -> None:
             audit_store,
         )
         if handled_database:
+            continue
+        handled_sqlite, audit_store = _handle_sqlite_prompt(
+            raw_prompt,
+            sqlite_profile_manager,
+            approval_manager,
+            risk_engine,
+            audit_store,
+        )
+        if handled_sqlite:
             continue
         if blocklist is None:
             print("Command blocked because the blocklist is unavailable.")
