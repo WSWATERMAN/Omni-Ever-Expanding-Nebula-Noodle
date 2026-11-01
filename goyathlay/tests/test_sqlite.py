@@ -100,6 +100,8 @@ class SqliteCliIntegrationTests(unittest.TestCase):
         maintenance.is_allowed.return_value = True
         policies = Mock()
         policies.get_default_profile.return_value = goyathlay.PolicyProfile("development", True, True, 0)
+        knowledge = Mock()
+        knowledge.get_approved.return_value = None
         output = io.StringIO()
 
         with (
@@ -119,6 +121,8 @@ class SqliteCliIntegrationTests(unittest.TestCase):
             patch.object(goyathlay, "PostgresConnectionManager", return_value=Mock()),
             patch.object(goyathlay, "SqliteProfileManager", return_value=manager),
             patch.object(goyathlay, "SqliteExecutor", return_value=executor),
+            patch.object(goyathlay, "KnowledgeBase", return_value=knowledge),
+            patch.object(goyathlay, "migrate_legacy_data", return_value={"imported_candidates": 0, "imported_feedback": 0, "already_migrated": 0}),
             patch("builtins.input", side_effect=["sqlite> local show tables", "exit"]),
             redirect_stdout(output),
         ):
@@ -163,7 +167,7 @@ class SqliteCliIntegrationTests(unittest.TestCase):
         self.assertEqual(record.database_path, profile.database)
         self.assertEqual(record.row_count, 1)
         self.assertTrue(record.success)
-        feedback_class.return_value.review.assert_called_once_with("show tables", query.sql)
+        feedback_class.return_value.review.assert_called_once_with("show tables", query.sql, operator_view=True)
         self.assertIn("Profile:\nlocal", output.getvalue())
         self.assertIn("users", output.getvalue())
 

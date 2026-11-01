@@ -11,7 +11,7 @@ class ApprovalManager:
         treated as cancellation so it cannot be mistaken for approval.
         """
         print("-" * 36)
-        print("GOYATHLAY COMMAND REVIEW")
+        print("GOYATHLAY COMMAND REVIEW" if display_command else "GOYATHLAY EXECUTION APPROVAL")
         print("-" * 36)
         print()
         if display_command:
@@ -19,6 +19,8 @@ class ApprovalManager:
             print()
             print(command)
             print()
+        if not display_command:
+            print("Approve execution for this request?")
         print("[A] Approve")
         print("[E] Edit")
         print("[C] Cancel")

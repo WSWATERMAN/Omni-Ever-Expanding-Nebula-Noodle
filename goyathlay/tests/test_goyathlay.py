@@ -38,6 +38,9 @@ class GoyathlayCliTests(unittest.TestCase):
         feedback_manager.review.return_value = feedback_result
         command_cache = Mock()
         command_cache.get_verified.return_value = cache_entry
+        knowledge = Mock()
+        knowledge.get_approved.return_value = None
+        self.last_knowledge = knowledge
         audit_store = Mock()
         reputation_engine = Mock()
         reputation_engine.get_reputation.return_value = reputation_result
@@ -78,6 +81,8 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "ExecutionManager", return_value=execution_manager),
             patch.object(goyathlay, "FeedbackManager", return_value=feedback_manager),
             patch.object(goyathlay, "CommandCache", return_value=command_cache),
+            patch.object(goyathlay, "KnowledgeBase", return_value=knowledge),
+            patch.object(goyathlay, "migrate_legacy_data", return_value={"imported_candidates": 0, "imported_feedback": 0, "already_migrated": 0}),
             patch.object(goyathlay, "AuditStore", return_value=audit_store),
             patch.object(goyathlay, "ReputationEngine", return_value=reputation_engine),
             patch.object(goyathlay, "RbacEngine", return_value=rbac_engine),
@@ -151,8 +156,8 @@ class GoyathlayCliTests(unittest.TestCase):
         approval.review.assert_not_called()
         execution.execute.assert_not_called()
         self.assertIn("DRY RUN", output)
-        self.assertIn("Risk:", output)
-        self.assertIn("Targets:", output)
+        self.assertIn("Command:\nnetstat -tuln", output)
+        self.assertNotIn("Risk:", output)
 
     def test_maintenance_cli_lists_adds_and_removes_windows(self):
         manager = Mock()
@@ -265,8 +270,10 @@ class GoyathlayCliTests(unittest.TestCase):
         cleaner.assert_called_once_with("```bash\nnetstat -tuln\n```")
         approval.review.assert_called_once_with("netstat -tuln", display_command=False)
         execution.execute.assert_called_once_with("netstat -tuln")
-        feedback.review.assert_called_once_with("show listening ports", "netstat -tuln")
-        cache.record_success.assert_called_once_with("show listening ports", "netstat -tuln")
+        feedback.review.assert_called_once_with("show listening ports", "netstat -tuln", operator_view=True)
+        self.last_knowledge.record_operator_feedback.assert_called_once_with(
+            "show listening ports", "local", "netstat -tuln", "success", "shell"
+        )
         audit_record = audit.append.call_args.args[0]
         self.assertIsInstance(audit_record, AuditRecord)
         self.assertEqual(audit_record.intent, "show listening ports")
@@ -276,7 +283,9 @@ class GoyathlayCliTests(unittest.TestCase):
         self.assertEqual(audit_record.return_code, 0)
         self.assertTrue(audit_record.success)
         reputation.get_reputation.assert_called_once_with("netstat -tuln")
-        self.assertIn("Policy:\nALLOW", output)
+        self.assertNotIn("Policy:\nALLOW", output)
+        self.assertNotIn("netstat -tuln", output)
+        self.assertNotIn("netstat -tuln", output)
         self.assertIn("Return Code: 0", output)
         self.assertIn("STDOUT:\nlistening", output)
 
@@ -332,7 +341,8 @@ class GoyathlayCliTests(unittest.TestCase):
         )
 
         self.assertIn("Current Profile: development", output)
-        self.assertIn("Profile:\ndevelopment", output)
+        self.assertIn("PROFILE:development", output)
+        self.assertNotIn("Policy:", output)
 
     def test_profiles_command_lists_available_profiles(self):
         output, *_ = self.run_cli(["profiles", "exit"])
@@ -380,7 +390,7 @@ class GoyathlayCliTests(unittest.TestCase):
         self.assertEqual(mocked_input.call_count, 2)
         execution.execute.assert_not_called()
         feedback.review.assert_not_called()
-        cache.get_verified.assert_called_once_with("show listening ports")
+        self.last_knowledge.get_approved.assert_called_once_with("show listening ports", "local", "shell")
         audit.append.assert_not_called()
 
     def test_execution_failure_is_reported_and_loop_continues(self):
@@ -406,23 +416,23 @@ class GoyathlayCliTests(unittest.TestCase):
         cache.get_verified.assert_not_called()
         audit.append.assert_not_called()
 
-    def test_verified_cache_hit_skips_provider_and_uses_approval(self):
+    def test_legacy_cache_entry_is_not_reused_without_sme_approval(self):
         output, provider, _, approval, execution, _, feedback, cache, audit, _ = self.run_cli(
-            ["show listening ports", "Y", "exit"],
+            ["show listening ports", "exit"],
             cache_entry=CachedCommand(
                 "show listening ports", "netstat -tuln", "verified", "2026-10-31T12:00:00Z"
             ),
         )
 
-        provider.generate_command.assert_not_called()
+        provider.generate_command.assert_called_once_with("show listening ports")
         approval.review.assert_called_once_with("netstat -tuln", display_command=False)
         execution.execute.assert_called_once_with("netstat -tuln")
-        feedback.review.assert_called_once_with("show listening ports", "netstat -tuln")
-        self.assertIn("Verified command found.", output)
+        feedback.review.assert_called_once_with("show listening ports", "netstat -tuln", operator_view=True)
+        self.assertNotIn("Verified command found.", output)
 
     def test_cache_decline_falls_back_to_provider(self):
         _, provider, _, _, _, _, _, _, _, _ = self.run_cli(
-            ["show listening ports", "N", "exit"],
+            ["show listening ports", "exit"],
             cache_entry=CachedCommand(
                 "show listening ports", "netstat -tuln", "verified", "2026-10-31T12:00:00Z"
             ),
@@ -430,16 +440,18 @@ class GoyathlayCliTests(unittest.TestCase):
 
         provider.generate_command.assert_called_once_with("show listening ports")
 
-    def test_feedback_failure_and_dangerous_update_cache(self):
-        for feedback_result, method in (
-            (FeedbackResult.FAILURE, "record_failure"),
-            (FeedbackResult.DANGEROUS, "record_dangerous"),
+    def test_feedback_failure_and_dangerous_update_knowledge(self):
+        for feedback_result, value in (
+            (FeedbackResult.FAILURE, "failure"),
+            (FeedbackResult.DANGEROUS, "dangerous"),
         ):
             with self.subTest(feedback_result=feedback_result):
-                _, _, _, _, _, _, _, cache, _, _ = self.run_cli(
+                self.run_cli(
                     ["show listening ports", "exit"], feedback_result=feedback_result
                 )
-                getattr(cache, method).assert_called_once_with("show listening ports", "netstat -tuln")
+                self.last_knowledge.record_operator_feedback.assert_called_once_with(
+                    "show listening ports", "local", "netstat -tuln", value, "shell"
+                )
 
     def test_high_risk_executes_only_after_exact_execute_confirmation(self):
         output, _, _, approval, execution, _, _, _, audit, _ = self.run_cli(
@@ -487,7 +499,7 @@ class GoyathlayCliTests(unittest.TestCase):
             approval_result=(True, "systemctl restart nginx"),
         )
 
-        self.assertIn("Policy:\nREQUIRE EXTRA CONFIRMATION", output)
+        self.assertNotIn("Policy:\nREQUIRE EXTRA CONFIRMATION", output)
         approval.review.assert_called_once_with("systemctl restart nginx", display_command=False)
         execution.execute.assert_called_once_with("systemctl restart nginx")
 
@@ -552,6 +564,8 @@ class GoyathlayCliTests(unittest.TestCase):
         feedback.review.return_value = FeedbackResult.SUCCESS
         cache = Mock()
         cache.get_verified.return_value = None
+        knowledge = Mock()
+        knowledge.get_approved.return_value = None
         audit = Mock()
         reputation = Mock()
         reputation.get_reputation.return_value = None
@@ -574,6 +588,8 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "ExecutionManager", return_value=local_execution),
             patch.object(goyathlay, "FeedbackManager", return_value=feedback),
             patch.object(goyathlay, "CommandCache", return_value=cache),
+            patch.object(goyathlay, "KnowledgeBase", return_value=knowledge),
+            patch.object(goyathlay, "migrate_legacy_data", return_value={"imported_candidates": 0, "imported_feedback": 0, "already_migrated": 0}),
             patch.object(goyathlay, "AuditStore", return_value=audit),
             patch.object(goyathlay, "ReputationEngine", return_value=reputation),
             patch.object(goyathlay, "HostInventory", return_value=inventory),
@@ -597,10 +613,10 @@ class GoyathlayCliTests(unittest.TestCase):
         ssh_client.close.assert_called_once()
         local_execution.execute.assert_not_called()
         feedback.review.assert_called_once_with(
-            "remote:server01 show listening ports", "netstat -tuln"
+            "show listening ports", "netstat -tuln", operator_view=True
         )
-        cache.record_success.assert_called_once_with(
-            "remote:server01 show listening ports", "netstat -tuln"
+        knowledge.record_operator_feedback.assert_called_once_with(
+            "show listening ports", "remote", "netstat -tuln", "success", "shell"
         )
         self.assertEqual(audit.append.call_args.args[0].intent, "remote:server01 show listening ports")
         self.assertIn("Targets:\n- server01", output.getvalue())
@@ -628,8 +644,7 @@ class GoyathlayCliTests(unittest.TestCase):
         audit_records = [call.args[0] for call in audit.append.call_args_list]
         self.assertEqual([record.host for record in audit_records], ["server01", "server02"])
         self.assertEqual([record.success for record in audit_records], [True, False])
-        feedback.review.assert_called_once_with("remote:prod show listening ports", "netstat -tuln")
-        cache.record_success.assert_not_called()
+        feedback.review.assert_called_once_with("show listening ports", "netstat -tuln", operator_view=True)
 
     def test_role_override_is_required_before_other_high_risk_checks(self):
         output, _, _, approval, execution, mocked_input, _, _, audit, _ = self.run_cli(

@@ -14,6 +14,8 @@ class Role(Enum):
 
     VIEWER = "viewer"
     OPERATOR = "operator"
+    TRAINER = "trainer"
+    SME = "sme"
     ADMIN = "admin"
 
 
@@ -58,6 +60,22 @@ class RbacEngine:
             RiskLevel.MEDIUM: AuthorizationDecision.ALLOW,
             RiskLevel.HIGH: AuthorizationDecision.ALLOW,
         },
+        Role.TRAINER: {
+            RiskLevel.LOW: AuthorizationDecision.ALLOW,
+            RiskLevel.MEDIUM: AuthorizationDecision.ALLOW,
+            RiskLevel.HIGH: AuthorizationDecision.REQUIRE_OVERRIDE,
+        },
+        Role.SME: {
+            RiskLevel.LOW: AuthorizationDecision.ALLOW,
+            RiskLevel.MEDIUM: AuthorizationDecision.ALLOW,
+            RiskLevel.HIGH: AuthorizationDecision.REQUIRE_OVERRIDE,
+        },
+    }
+
+    _LEARNING_PERMISSIONS = {
+        "feedback": {Role.OPERATOR, Role.TRAINER, Role.SME, Role.ADMIN},
+        "grade": {Role.TRAINER, Role.SME, Role.ADMIN},
+        "approve": {Role.SME, Role.ADMIN},
     }
 
     def authorize(self, user: UserContext, risk_level: RiskLevel) -> AuthorizationDecision:
@@ -67,3 +85,9 @@ class RbacEngine:
         if not isinstance(risk_level, RiskLevel):
             raise TypeError("risk_level must be a RiskLevel.")
         return self._DECISIONS[user.role][risk_level]
+
+    def authorize_learning(self, user: UserContext, action: str) -> bool:
+        """Check persona permissions for learning actions, independent of risk."""
+        if action not in self._LEARNING_PERMISSIONS:
+            raise ValueError(f"Unknown learning action: {action}")
+        return user.role in self._LEARNING_PERMISSIONS[action]

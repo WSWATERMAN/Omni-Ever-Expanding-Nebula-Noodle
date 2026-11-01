@@ -1,4 +1,6 @@
 import unittest
+import io
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from goyathlay.approval import ApprovalManager
@@ -31,6 +33,15 @@ class ApprovalManagerTests(unittest.TestCase):
     @patch("builtins.input", side_effect=["approve"])
     def test_accepts_full_word_case_insensitively(self, mock_input):
         self.assertEqual(self.manager.review("ls -la"), (True, "ls -la"))
+
+    @patch("builtins.input", return_value="A")
+    def test_operator_approval_hides_implementation(self, _mock_input):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = self.manager.review("ls -la", display_command=False)
+        self.assertEqual(result, (True, "ls -la"))
+        self.assertIn("Approve execution for this request?", output.getvalue())
+        self.assertNotIn("ls -la", output.getvalue())
 
 
 if __name__ == "__main__":

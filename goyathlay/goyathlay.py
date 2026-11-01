@@ -57,6 +57,10 @@ if __package__:
     from .ui.views import render_database_plan, render_execution_plan
     from .ui.diagnostics import render_engine_diagnostic
     from .healing import HealingManager, HealingError
+    from .knowledge import KnowledgeBase, KnowledgeError, KnowledgeStatus
+    from .knowledge.migration import migrate_legacy_data
+    from .knowledge.review_queue import ReviewQueue
+    from .knowledge.grading import GRADE_LABELS, validate_grade
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -107,6 +111,10 @@ else:  # Support: python goyathlay/goyathlay.py
     from ui.views import render_database_plan, render_execution_plan
     from ui.diagnostics import render_engine_diagnostic
     from healing import HealingManager, HealingError
+    from knowledge import KnowledgeBase, KnowledgeError, KnowledgeStatus
+    from knowledge.migration import migrate_legacy_data
+    from knowledge.review_queue import ReviewQueue
+    from knowledge.grading import GRADE_LABELS, validate_grade
 
 
 APP_VERSION = "1.0.0"
@@ -160,6 +168,139 @@ def _confirm_policy_override() -> bool:
 def _confirm_role_override() -> bool:
     """Require the role-specific confirmation before continuing."""
     return input("Type ROLE-OVERRIDE to continue: ").strip() == "ROLE-OVERRIDE"
+
+
+def _trainer_feedback(knowledge: KnowledgeBase, intent: str, environment: str,
+                      implementation: str, result: str, trainer: str = "local") -> None:
+    """Collect a trainer grade and persist it against the candidate."""
+    print("TRAINER IMPLEMENTATION REVIEW")
+    print(f"Intent:\n{intent}")
+    print(f"Generated Command:\n{implementation}")
+    print(f"Result:\n{result or '(no output)'}")
+    for grade, label in sorted(GRADE_LABELS.items(), reverse=True):
+        print(f"{grade} = {label}")
+    while True:
+        raw_grade = input("Grade (0-5): ").strip()
+        try:
+            grade = validate_grade(int(raw_grade))
+            break
+        except (ValueError, TypeError):
+            print("Enter a whole number from 0 through 5.")
+    notes = input("Optional Note: ").strip()
+    entry = knowledge.record_trainer_grade(intent, environment, implementation, grade, notes, trainer)
+    print(f"Trainer grade recorded. Average: {entry.trainer_score:.2f}/5")
+
+
+def _collect_knowledge_review(knowledge: KnowledgeBase | None, intent: str,
+                              environment: str, implementation: str, result: str,
+                              mode: str, user: UserContext | None = None,
+                              kind: str = "shell") -> None:
+    """Apply persona RBAC before collecting and persisting a review."""
+    active_user = user or UserContext("local", Role.ADMIN)
+    rbac = RbacEngine()
+    if mode == "trainer":
+        if not rbac.authorize_learning(active_user, "grade"):
+            print("Trainer grading denied for this role.")
+            return
+        if knowledge is None:
+            print("Trainer feedback cannot be stored because the knowledge base is unavailable.")
+            return
+        _trainer_feedback(knowledge, intent, environment, implementation, result, active_user.username)
+        return
+    if not rbac.authorize_learning(active_user, "feedback"):
+        print("Operator feedback denied for this role.")
+        return
+    feedback = FeedbackManager().review(intent, implementation, operator_view=mode == "operator")
+    if knowledge is not None:
+        knowledge.add_candidate(intent, environment, implementation, kind)
+    if knowledge is not None and feedback is not FeedbackResult.SKIPPED:
+        knowledge.record_operator_feedback(intent, environment, implementation, feedback.value, kind)
+
+
+def _handle_knowledge_command(raw: str, knowledge: KnowledgeBase | None,
+                              user: UserContext, rbac: RbacEngine,
+                              persona: str = "operator") -> bool:
+    """Handle knowledge statistics, trainer queue, and SME curation commands."""
+    name = raw.strip().casefold()
+    if name not in {"knowledge stats", "trainer queue", "sme review"}:
+        return False
+    if knowledge is None:
+        print("Knowledge base is unavailable.")
+        return True
+    if name == "knowledge stats":
+        if persona == "operator":
+            print("Knowledge statistics are available in trainer or SME mode.")
+            return True
+        if not (rbac.authorize_learning(user, "grade") or rbac.authorize_learning(user, "approve")):
+            print("Knowledge statistics denied: this role cannot inspect implementation records.")
+            return True
+        stats = knowledge.stats()
+        print(f"Total Entries: {stats['total_entries']}\nApproved Entries: {stats['approved_entries']}\nPending Review: {stats['pending_review']}\nRejected Entries: {stats['rejected_entries']}")
+        for label, entries in (("Top Rated Implementations", stats["top_rated"]),
+                               ("Lowest Rated Implementations", stats["lowest_rated"])):
+            print(f"{label}:")
+            for entry in entries:
+                print(f"- [{entry.environment}/{entry.type}] {entry.intent}: {entry.implementation} ({entry.score:.2f}) {entry.sme_status}")
+        return True
+    if name == "trainer queue":
+        if persona not in {"trainer", "sme"}:
+            print("Trainer queue is available in trainer or SME mode.")
+            return True
+        if not rbac.authorize_learning(user, "grade"):
+            print("Trainer queue denied: this role cannot review implementation quality.")
+            return True
+        pending = knowledge.list_pending()
+        print("Pending SME Review:")
+        if not pending:
+            print("- Empty")
+        for entry in pending:
+            print(f"- {entry.intent} [{entry.environment}/{entry.type}]: {entry.implementation} (average grade: {entry.trainer_score if entry.trainer_score is not None else 'ungraded'})")
+        return True
+    if persona != "sme":
+        print("Switch to SME mode with 'mode sme' to review organizational knowledge.")
+        return True
+    if not rbac.authorize_learning(user, "approve"):
+        print("SME review denied: this role cannot approve organizational knowledge.")
+        return True
+    queue = ReviewQueue(knowledge)
+    pending = queue.pending()
+    if not pending:
+        print("SME review queue is empty.")
+        return True
+    for entry in pending:
+        print("-" * 40)
+        print(f"Intent:\n{entry.intent}\nEnvironment:\n{entry.environment}\nGenerated Command:\n{entry.implementation}")
+        print(f"Average Grade: {entry.trainer_score if entry.trainer_score is not None else 'Not graded'}")
+        total = entry.success_count + entry.failure_count + entry.dangerous_count
+        success_rate = f"{entry.success_count / total:.0%}" if total else "Unknown"
+        print(f"Operator Success Rate: {success_rate}\nDangerous Reports: {entry.dangerous_count}\nReviews: {entry.trainer_review_count + total}")
+        action = input("[A] Approve [R] Reject [E] Replace Command [N] Add Note [S] Skip: ").strip().casefold()
+        if action not in {"a", "approve", "r", "reject", "e", "replace", "n", "note", "s", "skip"}:
+            print("Unknown action; candidate left pending.")
+            continue
+        try:
+            if action in {"a", "approve"}:
+                note = input("Optional Note: ").strip()
+                queue.approve(entry, note)
+                print("Knowledge approved.")
+            elif action in {"r", "reject"}:
+                note = input("Reason: ").strip()
+                queue.reject(entry, note)
+                print("Knowledge rejected.")
+            elif action in {"e", "replace"}:
+                replacement = input("Replacement implementation: ").strip()
+                if replacement:
+                    note = input("Optional Note: ").strip()
+                    queue.replace(entry, replacement, note)
+                    print("Old candidate rejected; replacement added as pending.")
+                else:
+                    print("Replacement was empty; no change made.")
+            elif action in {"n", "note"}:
+                queue.add_note(entry, input("Note: ").strip())
+                print("Note recorded; candidate remains pending.")
+        except (ValueError, KnowledgeError) as exc:
+            print(f"Unable to update knowledge: {exc}")
+    return True
 
 
 def _handle_blocklist_command(raw_command: str, blocklist: CommandBlocklist | None) -> bool:
@@ -453,6 +594,8 @@ def _handle_database_prompt(
     audit_store: AuditStore | None,
     show_risk: bool = True,
     mode: str = "operator",
+    knowledge_base: KnowledgeBase | None = None,
+    learning_user: UserContext | None = None,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect query feedback."""
     parsed = _parse_database_prompt(raw_prompt)
@@ -469,6 +612,9 @@ def _handle_database_prompt(
         profile = manager.load_profile(profile_name)
         interpreter = PostgresInterpreter()
         query = interpreter.translate(intent)
+        known = knowledge_base.get_approved(intent, "postgres", "postgres") if knowledge_base else None
+        if known:
+            query = replace(query, sql=known.implementation)
     except (DatabaseProfileError, ValueError) as exc:
         print(f"Unable to prepare PostgreSQL query:\n{exc}")
         return True, audit_store
@@ -478,7 +624,9 @@ def _handle_database_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    show_plan = mode in {"review", "debug"} or (assessment.level is RiskLevel.HIGH if mode == "operator" else (assessment.level is not RiskLevel.LOW and show_risk))
+    if mode == "operator" and not show_plan:
+        print(f"Profile: {profile.name}\nDatabase: {profile.host}:{profile.port}/{profile.database}")
     if show_plan:
         print(render_database_plan(
             engine="PostgreSQL", profile=profile.name, sql=query.sql,
@@ -487,7 +635,7 @@ def _handle_database_prompt(
             show_risk=True,
         ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan and mode != "operator")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -529,10 +677,12 @@ def _handle_database_prompt(
         success=True,
     )
     try:
-        FeedbackManager().review(intent, approved_sql)
+        _collect_knowledge_review(knowledge_base, intent, "postgres", approved_sql,
+                                  "\n".join(str(row) for row in result.rows), mode,
+                                  learning_user, "postgres")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
-    except FeedbackStoreError as exc:
+    except (FeedbackStoreError, KnowledgeError) as exc:
         print(f"Unable to store database feedback:\n{exc}")
     return True, audit_store
 
@@ -545,6 +695,8 @@ def _handle_sqlite_prompt(
     audit_store: AuditStore | None,
     show_risk: bool = True,
     mode: str = "operator",
+    knowledge_base: KnowledgeBase | None = None,
+    learning_user: UserContext | None = None,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, approve, execute, audit, and collect feedback for SQLite."""
     parsed = _parse_sqlite_prompt(raw_prompt)
@@ -561,6 +713,9 @@ def _handle_sqlite_prompt(
         profile = manager.load_profile(profile_name) if profile_name else manager.get_default_profile()
         interpreter = SqliteInterpreter()
         query = interpreter.translate(intent)
+        known = knowledge_base.get_approved(intent, "sqlite", "sqlite") if knowledge_base else None
+        if known:
+            query = replace(query, sql=known.implementation)
     except (SqliteProfileError, ValueError) as exc:
         print(f"Unable to prepare SQLite query:\n{exc}")
         return True, audit_store
@@ -570,7 +725,9 @@ def _handle_sqlite_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    show_plan = mode in {"review", "debug"} or (assessment.level is RiskLevel.HIGH if mode == "operator" else (assessment.level is not RiskLevel.LOW and show_risk))
+    if mode == "operator" and not show_plan:
+        print(f"Profile:\n{profile.name}\nDatabase:\n{profile.database}")
     if show_plan:
         print(render_database_plan(
             engine="SQLite", profile=profile.name, sql=query.sql,
@@ -579,7 +736,7 @@ def _handle_sqlite_prompt(
             show_risk=True,
         ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan and mode != "operator")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -624,10 +781,12 @@ def _handle_sqlite_prompt(
         database_path=profile.database,
     )
     try:
-        FeedbackManager().review(intent, approved_sql)
+        _collect_knowledge_review(knowledge_base, intent, "sqlite", approved_sql,
+                                  "\n".join(str(row) for row in result.rows), mode,
+                                  learning_user, "sqlite")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
-    except FeedbackStoreError as exc:
+    except (FeedbackStoreError, KnowledgeError) as exc:
         print(f"Unable to store SQLite feedback:\n{exc}")
     return True, audit_store
 
@@ -640,6 +799,8 @@ def _handle_mssql_prompt(
     audit_store: AuditStore | None,
     show_risk: bool = True,
     mode: str = "operator",
+    knowledge_base: KnowledgeBase | None = None,
+    learning_user: UserContext | None = None,
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect SQL Server feedback."""
     parsed = _parse_mssql_prompt(raw_prompt)
@@ -656,6 +817,9 @@ def _handle_mssql_prompt(
         profile = manager.load_profile(profile_name) if profile_name else manager.get_default_profile()
         interpreter = MssqlInterpreter()
         query = interpreter.translate(intent)
+        known = knowledge_base.get_approved(intent, "mssql", "mssql") if knowledge_base else None
+        if known:
+            query = replace(query, sql=known.implementation)
     except (MssqlProfileError, ValueError) as exc:
         print(f"Unable to prepare MSSQL query:\n{exc}")
         return True, audit_store
@@ -665,7 +829,9 @@ def _handle_mssql_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    show_plan = mode in {"review", "debug"} or (assessment.level is RiskLevel.HIGH if mode == "operator" else (assessment.level is not RiskLevel.LOW and show_risk))
+    if mode == "operator" and not show_plan:
+        print(f"Profile: {profile.name}\nDatabase: {profile.server}:{profile.port}/{profile.database}")
     if show_plan:
         print(render_database_plan(
             engine="Microsoft SQL Server", profile=profile.name, sql=query.sql,
@@ -674,7 +840,7 @@ def _handle_mssql_prompt(
             show_risk=True,
         ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan and mode != "operator")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -707,10 +873,12 @@ def _handle_mssql_prompt(
         database_path=profile.database,
     )
     try:
-        FeedbackManager().review(intent, approved_sql)
+        _collect_knowledge_review(knowledge_base, intent, "mssql", approved_sql,
+                                  "\n".join(str(row) for row in result.rows), mode,
+                                  learning_user, "mssql")
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
-    except FeedbackStoreError as exc:
+    except (FeedbackStoreError, KnowledgeError) as exc:
         print(f"Unable to store database feedback:\n{exc}")
     return True, audit_store
 
@@ -754,15 +922,25 @@ def _authorize_command(
 def _get_reputation(
     engine: ReputationEngine | None,
     command: str,
+    knowledge: KnowledgeBase | None = None,
+    intent: str | None = None,
+    environment: str = "local",
+    kind: str = "shell",
 ) -> CommandReputation | None:
-    """Return local reputation, treating unavailable history as unknown."""
-    if engine is None:
-        return None
+    """Return combined operator/trainer/SME reputation, with legacy fallback."""
+    legacy: CommandReputation | None = None
     try:
-        return engine.get_reputation(command)
+        legacy = engine.get_reputation(command) if engine is not None else None
     except FeedbackStoreError as exc:
         print(f"Reputation unavailable:\n{exc}")
-        return None
+    if knowledge is not None and intent is not None:
+        entry = knowledge.get_candidate(intent, environment, command, kind)
+        if entry is not None and entry.reputation_score is not None:
+            return CommandReputation(
+                command, entry.success_count, entry.failure_count,
+                entry.dangerous_count, entry.reputation_score,
+            )
+    return legacy
 
 
 def _display_command_policy(
@@ -824,6 +1002,8 @@ def _show_decision_details(state: ConsoleState, risk_level: RiskLevel) -> bool:
     """Gate verbose decision details behind risk or an explicit display mode."""
     if state.mode in {"review", "debug"}:
         return True
+    if state.persona == "operator":
+        return risk_level is RiskLevel.HIGH and state.show_risk
     return risk_level is not RiskLevel.LOW and state.show_risk
 
 
@@ -835,25 +1015,34 @@ def _handle_operator_command(
     cache_enabled: bool = True,
     healing_manager: HealingManager | None = None,
     console_state: ConsoleState | None = None,
+    role: str = "ADMIN",
+    user_context: UserContext | None = None,
+    rbac_engine: RbacEngine | None = None,
 ) -> bool:
     """Handle the console's status, help, inventory, audit, and history views."""
     name = command.strip().casefold()
     if name == "help":
-        print("Core Commands:\nstatus\nmode [operator|review|debug]\nprofiles\nprofile <name>\nheal dry-run\nheal review\nheal auto --dry-run\nheal auto\nheal save-plan\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
+        print("Core Commands:\nstatus\nmode [operator|trainer|sme|review|debug]\nknowledge stats\ntrainer queue\nsme review\nprofiles\nprofile <name>\nheal dry-run\nheal review\nheal auto --dry-run\nheal auto\nheal save-plan\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
         return True
     if name == "mode":
         print(f"Display Mode: {console_state.mode if console_state else 'operator'}")
         return True
     if name.startswith("mode "):
         selected = name.split(maxsplit=1)[1]
-        if selected not in {"operator", "review", "debug"}:
-            print("Usage: mode operator | mode review | mode debug")
+        if selected not in {"operator", "review", "debug", "trainer", "sme"}:
+            print("Usage: mode operator | mode trainer | mode sme | mode review | mode debug")
+        elif selected in {"trainer", "sme"} and user_context is not None and rbac_engine is not None and not rbac_engine.authorize_learning(
+            user_context, "grade" if selected == "trainer" else "approve"
+        ):
+            print(f"RBAC denied: role {user_context.role.name} cannot enter {selected} mode.")
         elif console_state is None:
             print("Display mode is unavailable.")
         else:
             console_state.mode = selected
+            if selected in {"operator", "trainer", "sme"}:
+                console_state.persona = selected
             console_state.notice = f"Mode: {selected}"
-            print(f"Display Mode: {selected}")
+            print(f"Persona: {console_state.persona} (display mode: {console_state.mode})")
         return True
     if name == "status":
         healing_status: dict[str, object] = {}
@@ -880,7 +1069,7 @@ def _handle_operator_command(
         print(render_status_output(
             engine=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
             profile=current_profile.name if current_profile else "unavailable",
-            role="ADMIN", cache_enabled=cache_enabled,
+            role=role, cache_enabled=cache_enabled,
             audit_enabled=True, tofu_enabled=True, hosts=host_count,
             groups=group_count, profiles=profile_count,
             test_count=count_test_cases(), version=APP_VERSION,
@@ -1019,6 +1208,14 @@ def main() -> None:
         command_cache = None
         print(f"Command cache unavailable:\n{exc}")
     try:
+        knowledge_base = KnowledgeBase()
+        migration = migrate_legacy_data(knowledge_base)
+        if not migration["already_migrated"] and (migration["imported_candidates"] or migration["imported_feedback"]):
+            print(f"Imported legacy learning history: {migration['imported_candidates']} cache entries, {migration['imported_feedback']} feedback events (all pending SME review).")
+    except KnowledgeError as exc:
+        knowledge_base = None
+        print(f"Knowledge base unavailable:\n{exc}")
+    try:
         host_inventory = HostInventory()
     except InventoryError as exc:
         host_inventory = None
@@ -1083,7 +1280,7 @@ def main() -> None:
         audit_enabled=True,
         tofu_enabled=True,
     ))
-    print("Type 'help' for commands, 'mode review' for command review, or 'exit' to leave.")
+    print("Type 'help' for commands, 'mode trainer' for implementation grading, 'mode sme' for curation, or 'exit' to leave.")
 
     while True:
         try:
@@ -1135,7 +1332,16 @@ def main() -> None:
             cache_enabled=command_cache is not None and not console_state.cache_bypass,
             healing_manager=healing_manager,
             console_state=console_state,
+            role=user_context.role.name,
+            user_context=user_context,
+            rbac_engine=rbac_engine,
         ):
+            continue
+        if _handle_knowledge_command(raw_prompt, knowledge_base, user_context, rbac_engine,
+                                     console_state.persona):
+            continue
+        if console_state.persona == "sme":
+            print("SME mode is for knowledge review. Use 'sme review', 'knowledge stats', or switch with 'mode operator'.")
             continue
         if raw_prompt.casefold().startswith("dryrun>"):
             dry_intent = raw_prompt[len("dryrun>"):].strip()
@@ -1248,6 +1454,8 @@ def main() -> None:
             audit_store,
             console_state.show_risk,
             console_state.mode,
+            knowledge_base,
+            user_context,
         )
         if handled_database:
             continue
@@ -1259,6 +1467,8 @@ def main() -> None:
             audit_store,
             console_state.show_risk,
             console_state.mode,
+            knowledge_base,
+            user_context,
         )
         if handled_sqlite:
             continue
@@ -1266,6 +1476,8 @@ def main() -> None:
             raw_prompt, mssql_profile_manager, approval_manager, risk_engine, audit_store,
             console_state.show_risk,
             console_state.mode,
+            knowledge_base,
+            user_context,
         )
         if handled_mssql:
             continue
@@ -1313,17 +1525,15 @@ def main() -> None:
         try:
             cache_state = "BYPASS" if console_state.cache_bypass else "UNAVAILABLE"
             command_source = "Ollama"
-            cached = (
-                command_cache.get_verified(cache_intent)
-                if command_cache is not None and not console_state.cache_bypass
-                else None
+            environment = "remote" if target_name is not None else os.environ.get("GOYATHLAY_ENVIRONMENT", "local")
+            known_entry = (
+                knowledge_base.get_approved(prompt, environment, "shell")
+                if knowledge_base is not None and not console_state.cache_bypass else None
             )
-            if command_cache is not None and not console_state.cache_bypass:
-                cache_state = "VERIFIED HIT" if cached is not None else "MISS"
-            use_cached = cached is not None and _confirm_cached_command(cache_intent, cached.command)
-            if use_cached:
-                command = clean_command(cached.command)
-                command_source = "Verified cache"
+            if known_entry is not None:
+                command = clean_command(known_entry.implementation)
+                command_source = "Approved organizational knowledge"
+                cache_state = "APPROVED KNOWLEDGE HIT"
             else:
                 if console_state.ai_bypass:
                     if console_state.mode == "debug":
@@ -1409,7 +1619,12 @@ def main() -> None:
                 continue
 
             approved, approved_command = approval_manager.review(
-                command, display_command=not show_details
+                command,
+                display_command=not (show_details or (
+                    console_state.persona == "operator"
+                    and assessment.level is not RiskLevel.HIGH
+                    and console_state.mode not in {"review", "debug"}
+                )),
             )
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
@@ -1566,34 +1781,28 @@ def main() -> None:
                 print("STDERR:")
                 print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
 
+        result_text = "\n".join(
+            part for part in (
+                result.stdout if fanout_results is None else "\n".join(item.stdout for item in fanout_results),
+                result.stderr if fanout_results is None else "\n".join(item.stderr for item in fanout_results),
+            ) if part
+        )
         try:
-            feedback_result = FeedbackManager().review(cache_intent, approved_command)
+            if knowledge_base is not None:
+                _collect_knowledge_review(
+                    knowledge_base, prompt,
+                    "remote" if target_name is not None else os.environ.get("GOYATHLAY_ENVIRONMENT", "local"),
+                    approved_command, result_text, console_state.persona,
+                    user_context, "shell",
+                )
+            else:
+                FeedbackManager().review(cache_intent, approved_command,
+                                         operator_view=console_state.persona == "operator")
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
             return
-        except FeedbackStoreError as exc:
-            print(f"Unable to store command feedback:\n{exc}")
-            continue
-
-        if command_cache is None or feedback_result is FeedbackResult.SKIPPED:
-            continue
-        if (
-            fanout_results is not None
-            and not all(host_result.success for host_result in fanout_results)
-            and feedback_result is FeedbackResult.SUCCESS
-        ):
-            print("Command was not cached as verified because at least one host failed.")
-            continue
-
-        try:
-            if feedback_result is FeedbackResult.SUCCESS:
-                command_cache.record_success(cache_intent, approved_command)
-            elif feedback_result is FeedbackResult.FAILURE:
-                command_cache.record_failure(cache_intent, approved_command)
-            elif feedback_result is FeedbackResult.DANGEROUS:
-                command_cache.record_dangerous(cache_intent, approved_command)
-        except CacheError as exc:
-            print(f"Unable to update command cache:\n{exc}")
+        except (FeedbackStoreError, KnowledgeError, ValueError) as exc:
+            print(f"Unable to store learning feedback:\n{exc}")
 
 
 if __name__ == "__main__":

@@ -163,6 +163,8 @@ class PostgresCliIntegrationTests(unittest.TestCase):
         maintenance.is_allowed.return_value = True
         policies = Mock()
         policies.get_default_profile.return_value = PolicyProfile("development", True, True, 0)
+        knowledge = Mock()
+        knowledge.get_approved.return_value = None
         output = io.StringIO()
 
         with (
@@ -171,6 +173,8 @@ class PostgresCliIntegrationTests(unittest.TestCase):
             patch.object(goyathlay, "ExecutionManager"),
             patch.object(goyathlay, "FeedbackManager") as feedback_class,
             patch.object(goyathlay, "CommandCache"),
+            patch.object(goyathlay, "KnowledgeBase", return_value=knowledge),
+            patch.object(goyathlay, "migrate_legacy_data", return_value={"imported_candidates": 0, "imported_feedback": 0, "already_migrated": 0}),
             patch.object(goyathlay, "AuditStore", return_value=audit),
             patch.object(goyathlay, "ReputationEngine"),
             patch.object(goyathlay, "RbacEngine"),
@@ -190,8 +194,9 @@ class PostgresCliIntegrationTests(unittest.TestCase):
         approval.review.assert_called_once_with(sql, display_command=False)
         executor.execute.assert_called_once()
         audit.append.assert_called_once()
-        feedback_class.return_value.review.assert_called_once_with("show tables", sql)
-        self.assertIn("Database: PostgreSQL", output.getvalue())
+        feedback_class.return_value.review.assert_called_once_with("show tables", sql, operator_view=True)
+        self.assertIn("Profile: prod", output.getvalue())
+        self.assertIn("Database: db01:5432/postgres", output.getvalue())
         self.assertIn("users", output.getvalue())
 
     def test_approved_database_query_executes_audits_and_collects_feedback(self):
@@ -228,7 +233,7 @@ class PostgresCliIntegrationTests(unittest.TestCase):
         self.assertEqual(record.command, query.sql)
         self.assertEqual(record.row_count, 1)
         self.assertTrue(record.success)
-        feedback_class.return_value.review.assert_called_once_with("show tables", query.sql)
+        feedback_class.return_value.review.assert_called_once_with("show tables", query.sql, operator_view=True)
         self.assertIn("Columns: table_name, schema", output)
         self.assertIn("users\tpublic", output)
 

@@ -95,14 +95,19 @@ class FeedbackManager:
     def __init__(self, store: FeedbackStore | None = None) -> None:
         self.store = store if store is not None else FeedbackStore()
 
-    def review(self, intent: str, command: str) -> FeedbackResult:
-        """Ask for feedback until valid input is given, then append the event."""
+    def review(self, intent: str, command: str, *, operator_view: bool = False) -> FeedbackResult:
+        """Ask for feedback until valid input is given, then append the event.
+
+        ``operator_view`` limits the prompt to the result question and choices;
+        the implementation remains available to the private feedback record.
+        """
         print("-" * 36)
         print("COMMAND FEEDBACK")
         print("-" * 36)
-        print(f"Intent:\n{intent}")
-        print(f"Command:\n{command}")
-        print("Did this command solve your problem?")
+        if not operator_view:
+            print(f"Intent:\n{intent}")
+            print(f"Command:\n{command}")
+        print("Was this result acceptable?" if operator_view else "Did this command solve your problem?")
         print("[Y] Yes")
         print("[N] No")
         print("[D] Dangerous")

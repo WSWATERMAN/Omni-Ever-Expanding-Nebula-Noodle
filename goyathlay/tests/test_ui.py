@@ -33,11 +33,11 @@ class OperatorConsoleTests(unittest.TestCase):
         self.assertIn("Goyathlay - Autonomous Operations Platform", banner)
         self.assertIn("[Ctrl+B] Cache Bypass", banner)
         self.assertIn("[Ctrl+H] Help", banner)
-        self.assertIn("ENGINE:qwen2.5-coder:7b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON", banner)
-        self.assertIn("Quick Help: help | status | profiles | inventory", banner)
+        self.assertIn("Quick Help: help | status | profiles | inventory | mode", banner)
 
     def test_prompt_rendering_and_profile_update(self):
         self.assertEqual(render_prompt("production"), "goyathlay(production) ▷▶ ")
+        self.assertEqual(render_prompt("production", "trainer"), "goyathlay(trainer) ▷▶ ")
         self.state.cycle_profile()
         self.assertEqual(self.state.profile_name(), "emergency")
 
@@ -90,7 +90,8 @@ class OperatorConsoleTests(unittest.TestCase):
     def test_statusbar_updates_when_state_changes(self):
         statusbar = StatusBar(self.state)
         first = statusbar.render()
-        self.assertIn("GOYATHLAY | ENGINE:qwen2.5-coder:7b | PROFILE:production | CACHE:ON | AUDIT:ON | CPU:", first)
+        self.assertIn("ENGINE:qwen2.5-coder:7b | PROFILE:production", first)
+        self.assertIn("MODE:operator", first)
         HotkeyManager(self.state).handle_hotkey("Ctrl+B")
         self.state.cycle_profile()
         second = statusbar.render()

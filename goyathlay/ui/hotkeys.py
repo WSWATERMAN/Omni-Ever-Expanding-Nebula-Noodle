@@ -22,6 +22,7 @@ class ConsoleState:
     show_audit_details: bool = False
     notice: str = ""
     mode: str = "operator"
+    persona: str = "operator"
     health: str = "UNKNOWN"
     health_message: str = "Health scan pending"
 
@@ -73,7 +74,7 @@ class HotkeyManager:
         event.app.invalidate()
 
     def _help(self, event: Any) -> None:
-        self.state.notice = "Help: status | mode operator/review/debug | profiles | inventory | audit | history | exit"
+        self.state.notice = "Help: status | mode operator/trainer/sme/review/debug | knowledge stats | trainer queue | sme review | profiles | inventory | exit"
         event.app.invalidate()
 
     def handle_hotkey(self, key: str) -> str:
@@ -97,7 +98,7 @@ class HotkeyManager:
             groups = len(self.state.inventory.list_groups()) if self.state.inventory else 0
             self.state.notice = f"Inventory Summary | Hosts: {hosts} | Groups: {groups}"
         elif key == "c-h":
-            self.state.notice = "Help: status | mode operator/review/debug | profiles | inventory | audit | history | exit"
+            self.state.notice = "Help: status | mode operator/trainer/sme/review/debug | knowledge stats | trainer queue | sme review | profiles | inventory | exit"
         else:
             raise ValueError(f"Unknown hotkey: {key}")
         return self.state.notice

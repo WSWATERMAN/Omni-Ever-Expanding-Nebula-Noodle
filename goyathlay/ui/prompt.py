@@ -6,9 +6,9 @@ import sys
 from typing import Any
 
 
-def render_prompt(profile: str) -> str:
-    """Render the profile-aware command prompt."""
-    return f"goyathlay({profile}) ▷▶ "
+def render_prompt(profile: str, persona: str | None = None) -> str:
+    """Render the active persona, retaining profile display for old callers."""
+    return f"goyathlay({persona or profile}) ▷▶ "
 
 
 def read_prompt(profile: str, *, hotkeys: Any = None, statusbar: Any = None) -> str:
@@ -24,11 +24,11 @@ def read_prompt(profile: str, *, hotkeys: Any = None, statusbar: Any = None) -> 
         except ImportError:
             if statusbar is not None:
                 print(statusbar.render())
-            return input(render_prompt(profile))
+            return input(render_prompt(profile, statusbar.state.persona if statusbar else None))
         bindings = hotkeys.bindings() if hotkeys is not None else None
         toolbar = statusbar.render if statusbar is not None else None
-        message = Dynamic(lambda: render_prompt(hotkeys.state.profile_name())) if hotkeys else render_prompt(profile)
+        message = Dynamic(lambda: render_prompt(hotkeys.state.profile_name(), hotkeys.state.persona)) if hotkeys else render_prompt(profile)
         return prompt(message, key_bindings=bindings, bottom_toolbar=toolbar)
     if statusbar is not None:
         print(statusbar.render())
-    return input(render_prompt(profile))
+    return input(render_prompt(profile, statusbar.state.persona if statusbar else None))

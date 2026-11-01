@@ -1,6 +1,8 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,6 +60,13 @@ class FeedbackManagerTests(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertEqual([record["intent"] for record in history], ["intent one", "intent two"])
         self.assertEqual(len(self.path.read_text().splitlines()), 2)
+
+    def test_operator_view_does_not_show_implementation(self):
+        output = io.StringIO()
+        with patch("builtins.input", return_value="Y"), redirect_stdout(output):
+            self.manager.review("show files", "ls -la", operator_view=True)
+        self.assertIn("Was this result acceptable?", output.getvalue())
+        self.assertNotIn("ls -la", output.getvalue())
 
 
 if __name__ == "__main__":
