@@ -16,7 +16,7 @@ class AuditStoreTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     @staticmethod
-    def make_record(intent, command, return_code=0, success=True):
+    def make_record(intent, command, return_code=0, success=True, host=None):
         return AuditRecord(
             timestamp="2026-10-31T18:00:00Z",
             intent=intent,
@@ -25,6 +25,7 @@ class AuditStoreTests(unittest.TestCase):
             approval_result="approved",
             return_code=return_code,
             success=success,
+            host=host,
         )
 
     def test_creates_audit_store_with_owner_only_permissions(self):
@@ -77,6 +78,31 @@ class AuditStoreTests(unittest.TestCase):
         lines = self.path.read_text().splitlines()
         self.assertEqual(len(lines), 3)
         self.assertEqual([json.loads(line)["intent"] for line in lines], ["0", "1", "2"])
+
+    def test_host_is_persisted_and_loaded(self):
+        record = self.make_record("remote task", "ss -tulpn", host="web01")
+
+        self.store.append(record)
+
+        self.assertEqual(self.store.load(), [record])
+        self.assertEqual(json.loads(self.path.read_text())['host'], "web01")
+
+    def test_legacy_records_without_host_remain_loadable(self):
+        legacy = {
+            "timestamp": "2026-10-31T18:00:00Z",
+            "intent": "local task",
+            "command": "pwd",
+            "risk_level": "LOW",
+            "approval_result": "approved",
+            "return_code": 0,
+            "success": True,
+        }
+        self.path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+        records = self.store.load()
+
+        self.assertEqual(len(records), 1)
+        self.assertIsNone(records[0].host)
 
 
 if __name__ == "__main__":

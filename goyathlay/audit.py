@@ -20,6 +20,7 @@ class AuditRecord:
     approval_result: str
     return_code: int
     success: bool
+    host: str | None = None
 
 
 class AuditStoreError(RuntimeError):
@@ -105,7 +106,7 @@ def utc_timestamp() -> str:
 
 
 def _record_from_data(data: Any) -> AuditRecord | None:
-    fields = {
+    legacy_fields = {
         "timestamp",
         "intent",
         "command",
@@ -114,10 +115,13 @@ def _record_from_data(data: Any) -> AuditRecord | None:
         "return_code",
         "success",
     }
-    if not isinstance(data, dict) or set(data) != fields:
+    fields = legacy_fields | {"host"}
+    if not isinstance(data, dict) or set(data) not in (legacy_fields, fields):
         return None
-    if not all(isinstance(data[field], str) for field in fields - {"return_code", "success"}):
+    if not all(isinstance(data[field], str) for field in legacy_fields - {"return_code", "success"}):
         return None
     if type(data["return_code"]) is not int or type(data["success"]) is not bool:
+        return None
+    if "host" in data and data["host"] is not None and not isinstance(data["host"], str):
         return None
     return AuditRecord(**data)

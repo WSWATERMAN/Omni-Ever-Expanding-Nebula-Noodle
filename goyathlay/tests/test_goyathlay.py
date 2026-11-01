@@ -12,10 +12,12 @@ from goyathlay.audit import AuditRecord
 from goyathlay.reputation import CommandReputation
 from goyathlay.rbac import AuthorizationDecision
 from goyathlay.ssh.executor import SSHExecutionResult
+from goyathlay.inventory import HostRecord, InventoryError
+from goyathlay.fanout import HostExecutionResult
 
 
 class GoyathlayCliTests(unittest.TestCase):
-    def run_cli(self, prompts, provider_result="netstat -tuln", approval_result=(True, "netstat -tuln"), execution_result=None, provider_error=None, execution_error=None, cache_entry=None, feedback_result=FeedbackResult.SUCCESS, reputation_result=None, authorization_result=AuthorizationDecision.ALLOW):
+    def run_cli(self, prompts, provider_result="netstat -tuln", approval_result=(True, "netstat -tuln"), execution_result=None, provider_error=None, execution_error=None, cache_entry=None, feedback_result=FeedbackResult.SUCCESS, reputation_result=None, authorization_result=AuthorizationDecision.ALLOW, inventory_targets=None, fanout_results=None):
         provider = Mock()
         if provider_error:
             provider.generate_command.side_effect = provider_error
@@ -40,6 +42,10 @@ class GoyathlayCliTests(unittest.TestCase):
         reputation_engine.get_reputation.return_value = reputation_result
         rbac_engine = Mock()
         rbac_engine.authorize.return_value = authorization_result
+        inventory = Mock()
+        inventory.resolve_target.return_value = inventory_targets or []
+        fanout_executor = Mock()
+        fanout_executor.execute.return_value = fanout_results or []
 
         output = io.StringIO()
         with (
@@ -51,6 +57,8 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "AuditStore", return_value=audit_store),
             patch.object(goyathlay, "ReputationEngine", return_value=reputation_engine),
             patch.object(goyathlay, "RbacEngine", return_value=rbac_engine),
+            patch.object(goyathlay, "HostInventory", return_value=inventory),
+            patch.object(goyathlay, "FanoutExecutor", return_value=fanout_executor),
             patch.object(goyathlay, "clean_command", wraps=goyathlay.clean_command) as cleaner,
             patch("builtins.input", side_effect=prompts) as mocked_input,
             redirect_stdout(output),
@@ -280,6 +288,10 @@ class GoyathlayCliTests(unittest.TestCase):
         audit = Mock()
         reputation = Mock()
         reputation.get_reputation.return_value = None
+        inventory = Mock()
+        inventory.resolve_target.return_value = [
+            HostRecord("server01", "server01.example", 2222, "ubuntu")
+        ]
         output = io.StringIO()
 
         with (
@@ -290,15 +302,17 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "CommandCache", return_value=cache),
             patch.object(goyathlay, "AuditStore", return_value=audit),
             patch.object(goyathlay, "ReputationEngine", return_value=reputation),
+            patch.object(goyathlay, "HostInventory", return_value=inventory),
             patch.object(goyathlay, "SSHConnector", return_value=connector),
             patch.object(goyathlay, "SSHExecutor", return_value=ssh_executor),
-            patch.object(goyathlay.getpass, "getuser", return_value="scott"),
             patch("builtins.input", side_effect=["remote> server01 show listening ports", "exit"]),
             redirect_stdout(output),
         ):
             goyathlay.main()
 
-        connector.connect.assert_called_once_with("server01", username="scott")
+        connector.connect.assert_called_once_with(
+            "server01.example", username="ubuntu", port=2222
+        )
         ssh_executor.execute.assert_called_once_with(ssh_client, "netstat -tuln")
         ssh_client.close.assert_called_once()
         local_execution.execute.assert_not_called()
@@ -309,7 +323,33 @@ class GoyathlayCliTests(unittest.TestCase):
             "remote:server01 show listening ports", "netstat -tuln"
         )
         self.assertEqual(audit.append.call_args.args[0].intent, "remote:server01 show listening ports")
+        self.assertIn("Targets:\n- server01", output.getvalue())
         self.assertIn("STDOUT:\nports", output.getvalue())
+
+    def test_group_fanout_aggregates_and_audits_each_host_with_one_feedback(self):
+        first = HostRecord("server01", "server01.example", 22, "ubuntu")
+        second = HostRecord("server02", "server02.example", 22, "ubuntu")
+        output, provider, _, approval, execution, _, feedback, cache, audit, _ = self.run_cli(
+            ["remote> prod show listening ports", "exit"],
+            inventory_targets=[first, second],
+            fanout_results=[
+                HostExecutionResult("server01", 0, "ports\n", "", True),
+                HostExecutionResult("server02", 255, "", "connection failed", False),
+            ],
+        )
+
+        self.assertIn("Targets:\n- server01\n- server02", output)
+        self.assertIn("Host: server01\nSuccess: True", output)
+        self.assertIn("Host: server02\nSuccess: False\nExit Code: 255", output)
+        self.assertIn("Summary:\n2 Hosts\n1 Success\n1 Failure", output)
+        provider.generate_command.assert_called_once_with("show listening ports")
+        approval.review.assert_called_once_with("netstat -tuln", display_command=False)
+        execution.execute.assert_not_called()
+        audit_records = [call.args[0] for call in audit.append.call_args_list]
+        self.assertEqual([record.host for record in audit_records], ["server01", "server02"])
+        self.assertEqual([record.success for record in audit_records], [True, False])
+        feedback.review.assert_called_once_with("remote:prod show listening ports", "netstat -tuln")
+        cache.record_success.assert_not_called()
 
     def test_role_override_is_required_before_other_high_risk_checks(self):
         output, _, _, approval, execution, mocked_input, _, _, audit, _ = self.run_cli(

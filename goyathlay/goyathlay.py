@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Interactive, local-first Goyathlay command line application."""
 
-import getpass
-
 if __package__:
     from .approval import ApprovalManager
     from .command_cleaner import clean_command
@@ -17,6 +15,8 @@ if __package__:
     from .rbac import AuthorizationDecision, RbacEngine, Role, UserContext
     from .ssh.connector import SSHConnectionError, SSHConnector
     from .ssh.executor import SSHExecutionError, SSHExecutor
+    from .inventory import HostInventory, InventoryError
+    from .fanout import FanoutExecutor, HostExecutionResult
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -31,6 +31,8 @@ else:  # Support: python goyathlay/goyathlay.py
     from rbac import AuthorizationDecision, RbacEngine, Role, UserContext
     from ssh.connector import SSHConnectionError, SSHConnector
     from ssh.executor import SSHExecutionError, SSHExecutor
+    from inventory import HostInventory, InventoryError
+    from fanout import FanoutExecutor, HostExecutionResult
 
 
 def _create_provider():
@@ -156,6 +158,7 @@ def _append_audit_record(
     risk_level: str,
     return_code: int,
     success: bool,
+    host: str | None = None,
 ) -> AuditStore | None:
     """Append one approved execution attempt, reporting storage failures."""
     try:
@@ -170,6 +173,7 @@ def _append_audit_record(
                 approval_result="approved",
                 return_code=return_code,
                 success=success,
+                host=host,
             )
         )
     except AuditStoreError as exc:
@@ -197,6 +201,11 @@ def main() -> None:
     except CacheError as exc:
         command_cache = None
         print(f"Command cache unavailable:\n{exc}")
+    try:
+        host_inventory = HostInventory()
+    except InventoryError as exc:
+        host_inventory = None
+        print(f"Host inventory unavailable:\n{exc}")
 
     print("-" * 36)
     print("GOYATHLAY")
@@ -215,7 +224,7 @@ def main() -> None:
         if not raw_prompt:
             continue
         try:
-            target_host, prompt, cache_intent = _parse_target(raw_prompt)
+            target_name, prompt, cache_intent = _parse_target(raw_prompt)
         except ValueError as exc:
             print(exc)
             continue
@@ -223,6 +232,34 @@ def main() -> None:
             continue
         if prompt.casefold() in ("exit", "quit"):
             return
+
+        target_records = []
+        if target_name is not None:
+            if host_inventory is None:
+                print("Remote target unavailable because the host inventory could not be loaded.")
+                continue
+            try:
+                targets = host_inventory.resolve_target(target_name)
+            except InventoryError as exc:
+                print(f"Unable to resolve remote target:\n{exc}")
+                continue
+            print("Targets:")
+            for record in targets:
+                print(f"- {record.name}")
+            target_records = targets
+            if not target_records:
+                print("The selected target has no hosts.")
+                continue
+        target_record = target_records[0] if len(target_records) == 1 else None
+        target_host = target_record.hostname if target_record is not None else None
+        target_display = (
+            ", ".join(
+                f"{record.name} ({record.hostname}:{record.port})"
+                for record in target_records
+            )
+            if target_records
+            else None
+        )
 
         try:
             cached = command_cache.get_verified(cache_intent) if command_cache is not None else None
@@ -252,7 +289,7 @@ def main() -> None:
             reputation.score if reputation is not None else None,
         )
         _display_command_policy(
-            command, assessment.level, assessment.reasons, reputation, policy, target_host
+            command, assessment.level, assessment.reasons, reputation, policy, target_display
         )
         if policy.decision is PolicyDecision.DENY:
             print("Execution blocked.")
@@ -293,7 +330,7 @@ def main() -> None:
                 final_assessment.reasons,
                 final_reputation,
                 final_policy,
-                target_host,
+                target_display,
             )
             if final_policy.decision is PolicyDecision.DENY:
                 print("Execution blocked.")
@@ -309,14 +346,19 @@ def main() -> None:
         assessment = final_assessment
 
         ssh_client = None
+        fanout_results: list[HostExecutionResult] | None = None
         try:
             if target_host is None:
-                result = execution_manager.execute(approved_command)
-                return_code = result.returncode
+                if target_records:
+                    fanout_results = FanoutExecutor().execute(target_records, approved_command)
+                else:
+                    result = execution_manager.execute(approved_command)
+                    return_code = result.returncode
             else:
                 ssh_client = SSHConnector().connect(
                     target_host,
-                    username=getpass.getuser(),
+                    username=target_record.username,
+                    port=target_record.port,
                 )
                 remote_result = SSHExecutor().execute(ssh_client, approved_command)
                 return_code = remote_result.exit_code
@@ -353,22 +395,50 @@ def main() -> None:
             if ssh_client is not None:
                 ssh_client.close()
 
-        audit_store = _append_audit_record(
-            audit_store,
-            cache_intent,
-            approved_command,
-            assessment.level.name,
-            return_code,
-            return_code == 0,
-        )
+        if fanout_results is not None:
+            successes = sum(result.success for result in fanout_results)
+            for host_result in fanout_results:
+                print(f"Host: {host_result.host}")
+                print(f"Success: {host_result.success}")
+                if host_result.exit_code != 0:
+                    print(f"Exit Code: {host_result.exit_code}")
+                if host_result.stdout:
+                    print("STDOUT:")
+                    print(host_result.stdout, end="" if host_result.stdout.endswith("\n") else "\n")
+                if host_result.stderr:
+                    print("STDERR:")
+                    print(host_result.stderr, end="" if host_result.stderr.endswith("\n") else "\n")
+                audit_store = _append_audit_record(
+                    audit_store,
+                    cache_intent,
+                    approved_command,
+                    assessment.level.name,
+                    host_result.exit_code,
+                    host_result.success,
+                    host=host_result.host,
+                )
+            print("Summary:")
+            print(f"{len(fanout_results)} Hosts")
+            print(f"{successes} Success")
+            print(f"{len(fanout_results) - successes} Failure")
+        else:
+            audit_store = _append_audit_record(
+                audit_store,
+                cache_intent,
+                approved_command,
+                assessment.level.name,
+                return_code,
+                return_code == 0,
+                host=target_record.name if target_record is not None else None,
+            )
 
-        print(f"Return Code: {return_code}")
-        print("STDOUT:")
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-        if result.stderr:
-            print("STDERR:")
-            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+            print(f"Return Code: {return_code}")
+            print("STDOUT:")
+            if result.stdout:
+                print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+            if result.stderr:
+                print("STDERR:")
+                print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
 
         try:
             feedback_result = FeedbackManager().review(cache_intent, approved_command)
@@ -380,6 +450,13 @@ def main() -> None:
             continue
 
         if command_cache is None or feedback_result is FeedbackResult.SKIPPED:
+            continue
+        if (
+            fanout_results is not None
+            and not all(host_result.success for host_result in fanout_results)
+            and feedback_result is FeedbackResult.SUCCESS
+        ):
+            print("Command was not cached as verified because at least one host failed.")
             continue
 
         try:
