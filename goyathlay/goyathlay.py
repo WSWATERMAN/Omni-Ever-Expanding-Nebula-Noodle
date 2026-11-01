@@ -2,6 +2,7 @@
 """Interactive, local-first Goyathlay command line application."""
 
 import shlex
+from dataclasses import replace
 from datetime import datetime
 
 if __package__:
@@ -23,6 +24,16 @@ if __package__:
     from .profiles import PolicyProfile, ProfileManager, ProfileNotFoundError, ProfileStoreError
     from .blocklist import BlocklistError, CommandBlocklist
     from .maintenance import MaintenanceError, MaintenanceManager, MaintenanceWindow
+    from .db import (
+        DatabaseConnectionError,
+        DatabaseProfileError,
+        DatabaseProfileNotFoundError,
+        DatabaseQuery,
+        PostgresConnectionManager,
+        PostgresExecutionError,
+        PostgresExecutor,
+        PostgresInterpreter,
+    )
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -42,6 +53,16 @@ else:  # Support: python goyathlay/goyathlay.py
     from profiles import PolicyProfile, ProfileManager, ProfileNotFoundError, ProfileStoreError
     from blocklist import BlocklistError, CommandBlocklist
     from maintenance import MaintenanceError, MaintenanceManager, MaintenanceWindow
+    from db import (
+        DatabaseConnectionError,
+        DatabaseProfileError,
+        DatabaseProfileNotFoundError,
+        DatabaseQuery,
+        PostgresConnectionManager,
+        PostgresExecutionError,
+        PostgresExecutor,
+        PostgresInterpreter,
+    )
 
 
 def _create_provider():
@@ -175,6 +196,173 @@ def _handle_maintenance_command(raw_command: str, manager: MaintenanceManager | 
     except (ValueError, TypeError, MaintenanceError) as exc:
         print(f"Unable to update maintenance settings:\n{exc}")
     return True
+
+
+def _handle_db_profile_command(raw_command: str, manager: PostgresConnectionManager | None) -> bool:
+    """Handle `db profiles` and persisted default profile selection."""
+    parts = raw_command.strip().split()
+    if not parts or parts[0].casefold() != "db":
+        return False
+    if len(parts) == 2 and parts[1].casefold() == "profiles":
+        if manager is None:
+            print("Database profiles are unavailable.")
+            return True
+        print("Database Profiles:")
+        profiles = manager.list_profiles()
+        default_name = manager.profile_store.default_name
+        for profile in profiles:
+            marker = " (default)" if profile.name == default_name else ""
+            print(f"- {profile.name}: {profile.username}@{profile.host}:{profile.port}/{profile.database}{marker}")
+        if not profiles:
+            print("No database profiles configured.")
+        return True
+    if len(parts) == 3 and parts[1].casefold() == "profile":
+        if manager is None:
+            print("Database profiles are unavailable.")
+            return True
+        try:
+            manager.set_default_profile(parts[2])
+            print(f"Current Database Profile: {manager.load_profile().name}")
+        except DatabaseProfileNotFoundError as exc:
+            print(exc)
+        except DatabaseProfileError as exc:
+            print(f"Unable to select database profile:\n{exc}")
+        return True
+    return False
+
+
+def _parse_database_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
+    """Return the optional profile and intent from a `db>` prompt."""
+    if not raw_prompt.lstrip().casefold().startswith("db>"):
+        return None
+    body = raw_prompt.lstrip()[3:].strip()
+    if not body:
+        return (None, "")
+    first, separator, remainder = body.partition(" ")
+    if first.casefold() == "show":
+        return (None, body)
+    return (first, remainder.strip() if separator else "")
+
+
+def _append_database_audit(
+    store: AuditStore | None,
+    *,
+    intent: str,
+    query: str,
+    profile: str,
+    host: str,
+    row_count: int | None,
+    success: bool,
+) -> AuditStore | None:
+    """Append one approved database query execution outcome."""
+    try:
+        if store is None:
+            store = AuditStore()
+        store.append(
+            AuditRecord(
+                timestamp=utc_timestamp(),
+                intent=intent,
+                command=query,
+                risk_level="LOW",
+                approval_result="approved",
+                return_code=0 if success else -1,
+                success=success,
+                host=host,
+                database_profile=profile,
+                row_count=row_count,
+            )
+        )
+    except AuditStoreError as exc:
+        print(f"Unable to write database audit record:\n{exc}")
+    return store
+
+
+def _handle_database_prompt(
+    raw_prompt: str,
+    manager: PostgresConnectionManager | None,
+    approval_manager: ApprovalManager,
+    risk_engine: RiskEngine,
+    audit_store: AuditStore | None,
+) -> tuple[bool, AuditStore | None]:
+    """Translate, validate, approve, execute, audit, and collect query feedback."""
+    parsed = _parse_database_prompt(raw_prompt)
+    if parsed is None:
+        return False, audit_store
+    if manager is None:
+        print("Database execution is unavailable because profiles could not be loaded.")
+        return True, audit_store
+    profile_name, intent = parsed
+    if not intent:
+        print("Usage: db> [PROFILE] show tables")
+        return True, audit_store
+    try:
+        profile = manager.load_profile(profile_name)
+        interpreter = PostgresInterpreter()
+        query = interpreter.translate(intent)
+    except (DatabaseProfileError, ValueError) as exc:
+        print(f"Unable to prepare PostgreSQL query:\n{exc}")
+        return True, audit_store
+
+    validation = interpreter.validate(query.sql)
+    if not validation.allowed:
+        print(f"SQL validation blocked execution:\n{validation.reason}")
+        return True, audit_store
+    assessment = risk_engine.assess(query.sql)
+    print("Database: PostgreSQL")
+    print(f"Profile: {profile.name}")
+    print(f"Host: {profile.host}")
+    print("Generated SQL:")
+    print(query.sql)
+    print(f"Risk: {assessment.level.name}")
+    try:
+        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+        return True, audit_store
+    if not approved or approved_sql is None:
+        print("Database query cancelled.")
+        return True, audit_store
+
+    final_validation = interpreter.validate(approved_sql)
+    if not final_validation.allowed:
+        print(f"SQL validation blocked execution:\n{final_validation.reason}")
+        return True, audit_store
+    final_query = replace(query, sql=approved_sql)
+    try:
+        result = PostgresExecutor(manager).execute(final_query, profile)
+    except (DatabaseConnectionError, PostgresExecutionError) as exc:
+        audit_store = _append_database_audit(
+            audit_store,
+            intent=intent,
+            query=approved_sql,
+            profile=profile.name,
+            host=profile.host,
+            row_count=None,
+            success=False,
+        )
+        print(f"PostgreSQL execution failed:\n{exc}")
+        return True, audit_store
+
+    print(f"Columns: {', '.join(result.columns)}")
+    print(f"Rows: {result.row_count}")
+    for row in result.rows:
+        print("\t".join("NULL" if value is None else str(value) for value in row))
+    audit_store = _append_database_audit(
+        audit_store,
+        intent=intent,
+        query=approved_sql,
+        profile=profile.name,
+        host=profile.host,
+        row_count=result.row_count,
+        success=True,
+    )
+    try:
+        FeedbackManager().review(intent, approved_sql)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+    except FeedbackStoreError as exc:
+        print(f"Unable to store database feedback:\n{exc}")
+    return True, audit_store
 
 
 def _parse_target(raw_prompt: str) -> tuple[str | None, str, str]:
@@ -328,6 +516,11 @@ def main() -> None:
     except MaintenanceError as exc:
         maintenance_manager = None
         print(f"Maintenance settings unavailable:\n{exc}")
+    try:
+        database_manager = PostgresConnectionManager()
+    except DatabaseProfileError as exc:
+        database_manager = None
+        print(f"Database profiles unavailable:\n{exc}")
 
     print("-" * 36)
     print("GOYATHLAY")
@@ -350,6 +543,8 @@ def main() -> None:
         if _handle_blocklist_command(raw_prompt, blocklist):
             continue
         if _handle_maintenance_command(raw_prompt, maintenance_manager):
+            continue
+        if _handle_db_profile_command(raw_prompt, database_manager):
             continue
         command_parts = raw_prompt.split(maxsplit=1)
         command_name = command_parts[0].casefold()
@@ -383,6 +578,15 @@ def main() -> None:
             print("Command blocked because maintenance settings are unavailable.")
             continue
         if not _maintenance_allowed(maintenance_manager, current_profile.name):
+            continue
+        handled_database, audit_store = _handle_database_prompt(
+            raw_prompt,
+            database_manager,
+            approval_manager,
+            risk_engine,
+            audit_store,
+        )
+        if handled_database:
             continue
         if blocklist is None:
             print("Command blocked because the blocklist is unavailable.")

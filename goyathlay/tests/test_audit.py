@@ -87,6 +87,27 @@ class AuditStoreTests(unittest.TestCase):
         self.assertEqual(self.store.load(), [record])
         self.assertEqual(json.loads(self.path.read_text())['host'], "web01")
 
+    def test_database_execution_fields_are_persisted_and_loaded(self):
+        record = AuditRecord(
+            timestamp="2026-10-31T18:00:00Z",
+            intent="show tables",
+            command="SELECT table_name FROM information_schema.tables",
+            risk_level="LOW",
+            approval_result="approved",
+            return_code=0,
+            success=True,
+            host="db01",
+            database_profile="prod",
+            row_count=12,
+        )
+
+        self.store.append(record)
+
+        self.assertEqual(self.store.load(), [record])
+        loaded = json.loads(self.path.read_text())
+        self.assertEqual(loaded["database_profile"], "prod")
+        self.assertEqual(loaded["row_count"], 12)
+
     def test_legacy_records_without_host_remain_loadable(self):
         legacy = {
             "timestamp": "2026-10-31T18:00:00Z",

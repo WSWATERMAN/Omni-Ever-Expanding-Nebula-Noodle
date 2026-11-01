@@ -61,6 +61,7 @@ class GoyathlayCliTests(unittest.TestCase):
         maintenance_manager.enabled = False
         maintenance_manager.list_windows.return_value = []
         maintenance_manager.is_allowed.return_value = True
+        database_manager = Mock()
         command_blocklist = Mock()
         command_blocklist.list_commands.return_value = ["rm -rf /", "mkfs", "dd if="]
         if blocked_rules_by_command is not None:
@@ -83,6 +84,7 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "FanoutExecutor", return_value=fanout_executor),
             patch.object(goyathlay, "ProfileManager", return_value=profile_manager),
             patch.object(goyathlay, "MaintenanceManager", return_value=maintenance_manager),
+            patch.object(goyathlay, "PostgresConnectionManager", return_value=database_manager),
             patch.object(goyathlay, "CommandBlocklist", return_value=command_blocklist),
             patch.object(goyathlay, "clean_command", wraps=goyathlay.clean_command) as cleaner,
             patch("builtins.input", side_effect=prompts) as mocked_input,
@@ -138,6 +140,7 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "HostInventory"),
             patch.object(goyathlay, "ProfileManager") as profiles,
             patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
+            patch.object(goyathlay, "PostgresConnectionManager", return_value=Mock()),
             patch.object(goyathlay, "CommandBlocklist", return_value=blocklist),
             patch("builtins.input", side_effect=["show files", "exit"]),
             redirect_stdout(output),
@@ -172,6 +175,7 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "HostInventory"),
             patch.object(goyathlay, "ProfileManager") as profiles,
             patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
+            patch.object(goyathlay, "PostgresConnectionManager", return_value=Mock()),
             patch.object(goyathlay, "CommandBlocklist") as blocklist_class,
             patch("builtins.input", side_effect=["show files", "exit"]),
             redirect_stdout(output),

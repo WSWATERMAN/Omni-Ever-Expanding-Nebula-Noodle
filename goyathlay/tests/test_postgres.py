@@ -1,6 +1,9 @@
 """Tests for PostgreSQL intent translation and read-only SQL validation."""
 
 import unittest
+import io
+from contextlib import redirect_stdout
+from unittest.mock import Mock, patch
 
 from goyathlay.db import (
     DatabaseQuery,
@@ -8,6 +11,12 @@ from goyathlay.db import (
     QueryValidator,
     UnsupportedIntentError,
 )
+from goyathlay.db.executor import PostgresExecutionResult
+from goyathlay.db.profiles import DbProfile
+from goyathlay import goyathlay
+from goyathlay.audit import AuditRecord
+from goyathlay.risk import RiskEngine
+from goyathlay.profiles import PolicyProfile
 
 
 class PostgresInterpreterTests(unittest.TestCase):
@@ -136,6 +145,124 @@ class QueryValidatorTests(unittest.TestCase):
         for sql in ("", "  ", "-- just a comment", "UPDATE users SET x = 1"):
             with self.subTest(sql=sql):
                 self.assertFalse(self.validator.validate(sql).allowed)
+
+
+class PostgresCliIntegrationTests(unittest.TestCase):
+    def test_main_routes_database_prompt_without_calling_ollama(self):
+        profile = DbProfile("prod", "db01", 5432, "postgres", "readonly")
+        database_manager = Mock()
+        database_manager.load_profile.return_value = profile
+        database_manager.profile_store.default_name = "prod"
+        sql = PostgresInterpreter().translate("show tables").sql
+        approval = Mock()
+        approval.review.return_value = (True, sql)
+        executor = Mock()
+        executor.execute.return_value = PostgresExecutionResult((("users",),), ("table_name",), 1)
+        audit = Mock()
+        maintenance = Mock()
+        maintenance.is_allowed.return_value = True
+        policies = Mock()
+        policies.get_default_profile.return_value = PolicyProfile("development", True, True, 0)
+        output = io.StringIO()
+
+        with (
+            patch.object(goyathlay, "_create_provider") as provider_factory,
+            patch.object(goyathlay, "ApprovalManager", return_value=approval),
+            patch.object(goyathlay, "ExecutionManager"),
+            patch.object(goyathlay, "FeedbackManager") as feedback_class,
+            patch.object(goyathlay, "CommandCache"),
+            patch.object(goyathlay, "AuditStore", return_value=audit),
+            patch.object(goyathlay, "ReputationEngine"),
+            patch.object(goyathlay, "RbacEngine"),
+            patch.object(goyathlay, "HostInventory"),
+            patch.object(goyathlay, "ProfileManager", return_value=policies),
+            patch.object(goyathlay, "CommandBlocklist"),
+            patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
+            patch.object(goyathlay, "PostgresConnectionManager", return_value=database_manager),
+            patch.object(goyathlay, "PostgresExecutor", return_value=executor),
+            patch("builtins.input", side_effect=["db> prod show tables", "exit"]),
+            redirect_stdout(output),
+        ):
+            goyathlay.main()
+
+        provider_factory.assert_not_called()
+        approval.review.assert_called_once_with(sql, display_command=False)
+        executor.execute.assert_called_once()
+        audit.append.assert_called_once()
+        feedback_class.return_value.review.assert_called_once_with("show tables", sql)
+        self.assertIn("Database: PostgreSQL", output.getvalue())
+        self.assertIn("users", output.getvalue())
+
+    def test_approved_database_query_executes_audits_and_collects_feedback(self):
+        profile = DbProfile("prod", "db01", 5432, "postgres", "readonly")
+        manager = Mock()
+        manager.load_profile.return_value = profile
+        approval = Mock()
+        query = PostgresInterpreter().translate("show tables")
+        approval.review.return_value = (True, query.sql)
+        result = PostgresExecutionResult((("users", "public"),), ("table_name", "schema"), 1)
+        executor_store = Mock()
+        executor_store.execute.return_value = result
+        audit_store = Mock()
+        output = []
+
+        with (
+            patch.object(goyathlay, "PostgresExecutor", return_value=executor_store),
+            patch.object(goyathlay, "AuditStore", return_value=audit_store),
+            patch.object(goyathlay, "FeedbackManager") as feedback_class,
+            patch("builtins.print", side_effect=output.append),
+        ):
+            handled, updated_audit = goyathlay._handle_database_prompt(
+                "db> prod show tables", manager, approval, RiskEngine(), None
+            )
+
+        self.assertTrue(handled)
+        self.assertIs(updated_audit, audit_store)
+        approval.review.assert_called_once_with(query.sql, display_command=False)
+        executor_store.execute.assert_called_once_with(query, profile)
+        record = audit_store.append.call_args.args[0]
+        self.assertIsInstance(record, AuditRecord)
+        self.assertEqual(record.database_profile, "prod")
+        self.assertEqual(record.host, "db01")
+        self.assertEqual(record.command, query.sql)
+        self.assertEqual(record.row_count, 1)
+        self.assertTrue(record.success)
+        feedback_class.return_value.review.assert_called_once_with("show tables", query.sql)
+        self.assertIn("Columns: table_name, schema", output)
+        self.assertIn("users\tpublic", output)
+
+    def test_invalid_sql_edit_is_blocked_before_postgres_executor(self):
+        profile = DbProfile("prod", "db01", 5432, "postgres", "readonly")
+        manager = Mock()
+        manager.load_profile.return_value = profile
+        approval = Mock()
+        approval.review.return_value = (True, "DROP TABLE users")
+
+        with (
+            patch.object(goyathlay, "PostgresExecutor") as executor_class,
+            patch("builtins.print"),
+        ):
+            handled, audit = goyathlay._handle_database_prompt(
+                "db> prod show tables", manager, approval, RiskEngine(), None
+            )
+
+        self.assertTrue(handled)
+        self.assertIsNone(audit)
+        executor_class.assert_not_called()
+
+    def test_database_profile_cli_switches_and_lists_profiles(self):
+        manager = Mock()
+        manager.list_profiles.return_value = [
+            DbProfile("prod", "db01", 5432, "postgres", "readonly")
+        ]
+        manager.profile_store.default_name = "prod"
+        manager.load_profile.return_value = manager.list_profiles.return_value[0]
+        printed = []
+        with patch("builtins.print", side_effect=printed.append):
+            self.assertTrue(goyathlay._handle_db_profile_command("db profiles", manager))
+            self.assertTrue(goyathlay._handle_db_profile_command("db profile prod", manager))
+        manager.set_default_profile.assert_called_once_with("prod")
+        self.assertIn("- prod: readonly@db01:5432/postgres (default)", printed)
 
 
 if __name__ == "__main__":

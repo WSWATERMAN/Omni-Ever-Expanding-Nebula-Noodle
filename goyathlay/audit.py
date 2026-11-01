@@ -21,6 +21,8 @@ class AuditRecord:
     return_code: int
     success: bool
     host: str | None = None
+    database_profile: str | None = None
+    row_count: int | None = None
 
 
 class AuditStoreError(RuntimeError):
@@ -115,13 +117,27 @@ def _record_from_data(data: Any) -> AuditRecord | None:
         "return_code",
         "success",
     }
-    fields = legacy_fields | {"host"}
-    if not isinstance(data, dict) or set(data) not in (legacy_fields, fields):
+    optional_fields = {"host", "database_profile", "row_count"}
+    accepted_fields = (
+        legacy_fields,
+        legacy_fields | {"host"},
+        legacy_fields | {"database_profile", "row_count"},
+        legacy_fields | optional_fields,
+        legacy_fields | {"host", "database_profile"},
+        legacy_fields | {"host", "row_count"},
+    )
+    if not isinstance(data, dict) or set(data) not in accepted_fields:
         return None
     if not all(isinstance(data[field], str) for field in legacy_fields - {"return_code", "success"}):
         return None
     if type(data["return_code"]) is not int or type(data["success"]) is not bool:
         return None
     if "host" in data and data["host"] is not None and not isinstance(data["host"], str):
+        return None
+    if "database_profile" in data and data["database_profile"] is not None and not isinstance(data["database_profile"], str):
+        return None
+    if "row_count" in data and data["row_count"] is not None and (
+        type(data["row_count"]) is not int or data["row_count"] < 0
+    ):
         return None
     return AuditRecord(**data)
