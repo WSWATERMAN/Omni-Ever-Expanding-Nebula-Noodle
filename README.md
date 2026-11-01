@@ -18,8 +18,8 @@ No public LLM provider is used. Ollama itself must be available locally. SSH, da
 ```sh
 python3 scripts/install_goyathlay.py
 # or: ./scripts/install_goyathlay.sh
-source .venv-goyathlay/bin/activate
-python3 -m goyathlay.goyathlay
+# one-command setup/launch; creates the venv and installs missing requirements
+./run_goyathlay.sh
 ```
 
 The installer requires Python 3.12+, repairs or creates `.venv-goyathlay`, installs the dependencies in the root `requirements.txt`, checks Ollama, and pulls `qwen2.5-coder:7b` if missing. It validates a local command-generation smoke test and does not execute the generated command. A rebuilt environment is staged and only replaces the current venv after validation succeeds. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
@@ -42,7 +42,7 @@ Runtime: OK
 
 On macOS, the system commonly provides `python3` but no `python` command. A freshly created and activated virtual environment includes its own `python` command. You can also use `python3` explicitly after activation. To run without activating the environment, use `python3 -m venv .venv-goyathlay` once, install the requirements with `.venv-goyathlay/bin/python -m pip install -r goyathlay/requirements.txt`, then launch with `.venv-goyathlay/bin/python -m goyathlay.goyathlay`.
 
-Virtual environments are specific to their Python installation and operating system; do not copy one between machines. The installer detects and repairs a stale or broken `.venv-goyathlay`. Alternatively, `./run_goyathlay.sh` selects `python` when available and otherwise uses `python3`.
+Virtual environments are specific to their Python installation and operating system; do not copy one between machines. The installer detects and repairs a stale or broken `.venv-goyathlay`. `./run_goyathlay.sh` uses the repository virtual environment, creates it when missing, installs requirements if core imports are unavailable, and launches the CLI with that same interpreter. Set `GOYATHLAY_VENV` to use a different virtual-environment path.
 
 ## Example
 
