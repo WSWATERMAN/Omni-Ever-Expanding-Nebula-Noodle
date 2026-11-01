@@ -64,35 +64,15 @@ Virtual environments are specific to their Python installation and operating sys
 
 ```text
 🚀 Goyathlay - Autonomous Operations Platform Initialized Successfully
-ENGINE:qwen2.5-coder:7b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON
+Quick Help: help | status | profiles | inventory | mode
 
-Quick Help: help | status | profiles | inventory
-
+✔ HEALTHY | ENGINE:qwen2.5-coder:14b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON | CACHE:ON | MODE:operator
 goyathlay(production) ▷▶ show listening ports
-----------------------------------------------------
-EXECUTION PLAN
-----------------------------------------------------
-Intent:
-show listening ports
-
-Command:
+------------------------------------
+GOYATHLAY COMMAND REVIEW
+------------------------------------
+Generated Command:
 ss -tulpn
-
-Profile:
-production
-
-Role:
-ADMIN
-
-Risk:
-LOW
-
-Reputation:
-Unknown
-
-Policy:
-ALLOW
-----------------------------------------------------
 [A] Approve
 [E] Edit
 [C] Cancel
@@ -100,21 +80,25 @@ Selection: A
 Return Code: 0
 ```
 
-On an interactive terminal, the prompt_toolkit footer displays live profile,
-role, cache, audit, TOFU, CPU, and memory status. CPU and memory show `n/a`
-when the optional `psutil` package is unavailable. Ctrl+B toggles cache lookup,
+The persistent footer shows health, engine, profile, RBAC role, audit, TOFU,
+cache, and display mode. Health is `CRITICAL` when Ollama is unavailable and
+`DEGRADED` when a configured model or another local check is missing. The
+default `operator` mode omits the decision plan for LOW-risk operations while
+still showing the command at the mandatory approval prompt. Select `mode review`
+to see the command and decision details before approval, or `mode debug` to see
+the complete decision pipeline. Ctrl+B toggles cache lookup,
 Ctrl+K enables cache-only operation (no Ollama calls), Ctrl+R hides or shows
-risk detail while enforcement remains active, Ctrl+P cycles policy profiles,
+operator risk detail while enforcement remains active, Ctrl+P cycles policy profiles,
 Ctrl+T toggles audit detail mode, Ctrl+I shows the inventory summary, and
 Ctrl+H displays help. The footer shortcuts require `prompt_toolkit` installed
 from `goyathlay/requirements.txt`; non-interactive stdin uses ordinary input.
 
 Useful operator commands include `status`, `help`, `inventory`, `hosts`,
 `groups`, `audit`, and `history`, in addition to the existing profile, blocklist,
-maintenance, database, and remote-target commands. Database operations use the
-same plain-text plan framing with engine, profile, SQL, risk, and validation
-status. A network plan renderer is available for future network interpreter
-integration; this UX update does not add network interpreter commands.
+maintenance, database, and remote-target commands. Database operations show
+their query in the approval prompt in operator mode, and display a full plan in
+review or debug mode. A network plan renderer is available for future network
+interpreter integration; this UX update does not add network interpreter commands.
 
 The `status` command reports version, engine, profile, role, audit, TOFU,
 cache, inventory host and group totals, and the discovered unittest case count.

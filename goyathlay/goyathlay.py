@@ -452,6 +452,7 @@ def _handle_database_prompt(
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
     show_risk: bool = True,
+    mode: str = "operator",
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect query feedback."""
     parsed = _parse_database_prompt(raw_prompt)
@@ -477,14 +478,16 @@ def _handle_database_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print(render_database_plan(
-        engine="PostgreSQL", profile=profile.name, sql=query.sql,
-        risk=assessment.level.name, validation="PASSED",
-        target=f"{profile.host}:{profile.port}/{profile.database}",
-        show_risk=show_risk,
-    ))
+    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    if show_plan:
+        print(render_database_plan(
+            engine="PostgreSQL", profile=profile.name, sql=query.sql,
+            risk=assessment.level.name, validation="PASSED",
+            target=f"{profile.host}:{profile.port}/{profile.database}",
+            show_risk=True,
+        ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -541,6 +544,7 @@ def _handle_sqlite_prompt(
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
     show_risk: bool = True,
+    mode: str = "operator",
 ) -> tuple[bool, AuditStore | None]:
     """Translate, approve, execute, audit, and collect feedback for SQLite."""
     parsed = _parse_sqlite_prompt(raw_prompt)
@@ -566,14 +570,16 @@ def _handle_sqlite_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print(render_database_plan(
-        engine="SQLite", profile=profile.name, sql=query.sql,
-        risk=assessment.level.name, validation="PASSED",
-        target=profile.database,
-        show_risk=show_risk,
-    ))
+    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    if show_plan:
+        print(render_database_plan(
+            engine="SQLite", profile=profile.name, sql=query.sql,
+            risk=assessment.level.name, validation="PASSED",
+            target=profile.database,
+            show_risk=True,
+        ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -633,6 +639,7 @@ def _handle_mssql_prompt(
     risk_engine: RiskEngine,
     audit_store: AuditStore | None,
     show_risk: bool = True,
+    mode: str = "operator",
 ) -> tuple[bool, AuditStore | None]:
     """Translate, validate, approve, execute, audit, and collect SQL Server feedback."""
     parsed = _parse_mssql_prompt(raw_prompt)
@@ -658,14 +665,16 @@ def _handle_mssql_prompt(
         print(f"SQL validation blocked execution:\n{validation.reason}")
         return True, audit_store
     assessment = risk_engine.assess(query.sql)
-    print(render_database_plan(
-        engine="Microsoft SQL Server", profile=profile.name, sql=query.sql,
-        risk=assessment.level.name, validation="PASSED",
-        target=f"{profile.server}:{profile.port}/{profile.database}",
-        show_risk=show_risk,
-    ))
+    show_plan = mode in {"review", "debug"} or (assessment.level is not RiskLevel.LOW and show_risk)
+    if show_plan:
+        print(render_database_plan(
+            engine="Microsoft SQL Server", profile=profile.name, sql=query.sql,
+            risk=assessment.level.name, validation="PASSED",
+            target=f"{profile.server}:{profile.port}/{profile.database}",
+            show_risk=True,
+        ))
     try:
-        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+        approved, approved_sql = approval_manager.review(query.sql, display_command=not show_plan)
     except KeyboardInterrupt:
         print("\nExiting Goyathlay.")
         return True, audit_store
@@ -727,12 +736,15 @@ def _authorize_command(
     engine: RbacEngine,
     user: UserContext,
     risk_level: RiskLevel,
+    *,
+    display_decision: bool = True,
 ) -> AuthorizationDecision:
     """Display the role decision and obtain any required explicit override."""
     decision = engine.authorize(user, risk_level)
-    print(f"User:\n{user.username}")
-    print(f"Role:\n{user.role.name}")
-    print(f"Authorization:\n{decision.name}")
+    if display_decision:
+        print(f"User:\n{user.username}")
+        print(f"Role:\n{user.role.name}")
+        print(f"Authorization:\n{decision.name}")
     if decision is AuthorizationDecision.REQUIRE_OVERRIDE and not _confirm_role_override():
         print("Role override cancelled.")
         return AuthorizationDecision.DENY
@@ -778,6 +790,43 @@ def _display_command_policy(
     ))
 
 
+def _update_console_health(state: ConsoleState, plan: dict[str, object]) -> None:
+    """Set a concise health indicator from a read-only healing scan result."""
+    issues = plan.get("issues", [])
+    if not isinstance(issues, list) or not issues:
+        state.health = "HEALTHY"
+        state.health_message = "All local checks passed"
+        return
+    names = [str(item.get("issue", "Unknown issue")) for item in issues if isinstance(item, dict)]
+    ollama_unavailable = next(
+        (name for name in names if "ollama executable" in name.casefold() or "ollama daemon" in name.casefold()),
+        None,
+    )
+    if ollama_unavailable:
+        state.health = "CRITICAL"
+        state.health_message = "Ollama unavailable"
+        return
+    model_issue = next((name for name in names if "model" in name.casefold() and "missing" in name.casefold()), None)
+    if model_issue:
+        model = model_issue.removeprefix("Missing ").removesuffix(" model")
+        state.health = "DEGRADED"
+        state.health_message = f"Missing model {model}"
+        return
+    if names and "missing ollama package" in names[0].casefold():
+        state.health = "DEGRADED"
+        state.health_message = "Ollama Python package missing"
+        return
+    state.health = "DEGRADED"
+    state.health_message = names[0] if names else "Healing scan unavailable"
+
+
+def _show_decision_details(state: ConsoleState, risk_level: RiskLevel) -> bool:
+    """Gate verbose decision details behind risk or an explicit display mode."""
+    if state.mode in {"review", "debug"}:
+        return True
+    return risk_level is not RiskLevel.LOW and state.show_risk
+
+
 def _handle_operator_command(
     command: str, *, profile_manager: ProfileManager | None,
     current_profile: PolicyProfile | None, host_inventory: HostInventory | None,
@@ -785,22 +834,42 @@ def _handle_operator_command(
     show_audit_details: bool = False,
     cache_enabled: bool = True,
     healing_manager: HealingManager | None = None,
+    console_state: ConsoleState | None = None,
 ) -> bool:
     """Handle the console's status, help, inventory, audit, and history views."""
     name = command.strip().casefold()
     if name == "help":
-        print("Core Commands:\nstatus\nprofiles\nprofile <name>\nheal dry-run\nheal review\nheal auto --dry-run\nheal auto\nheal save-plan\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
+        print("Core Commands:\nstatus\nmode [operator|review|debug]\nprofiles\nprofile <name>\nheal dry-run\nheal review\nheal auto --dry-run\nheal auto\nheal save-plan\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
+        return True
+    if name == "mode":
+        print(f"Display Mode: {console_state.mode if console_state else 'operator'}")
+        return True
+    if name.startswith("mode "):
+        selected = name.split(maxsplit=1)[1]
+        if selected not in {"operator", "review", "debug"}:
+            print("Usage: mode operator | mode review | mode debug")
+        elif console_state is None:
+            print("Display mode is unavailable.")
+        else:
+            console_state.mode = selected
+            console_state.notice = f"Mode: {selected}"
+            print(f"Display Mode: {selected}")
         return True
     if name == "status":
         healing_status: dict[str, object] = {}
         try:
             plan = (healing_manager or HealingManager()).scan()
+            if console_state is not None:
+                _update_console_health(console_state, plan)
             healing_status = {
-                "health": "DEGRADED" if plan["issues"] else "HEALTHY",
+                "health": console_state.health if console_state else ("DEGRADED" if plan["issues"] else "HEALTHY"),
                 "outstanding_issues": len(plan["issues"]),
                 "last_healing_scan": plan["generated_at"],
             }
         except HealingError:
+            if console_state is not None:
+                console_state.health = "DEGRADED"
+                console_state.health_message = "Health scan unavailable"
             healing_status = {"health": "UNKNOWN", "outstanding_issues": 0, "last_healing_scan": "Unavailable"}
         try:
             host_count = len(host_inventory.list_hosts()) if host_inventory else 0
@@ -1002,6 +1071,11 @@ def main() -> None:
     hotkeys = HotkeyManager(console_state)
     statusbar = StatusBar(console_state)
     healing_manager = HealingManager()
+    try:
+        _update_console_health(console_state, healing_manager.scan())
+    except HealingError:
+        console_state.health = "DEGRADED"
+        console_state.health_message = "Health scan unavailable"
     print(render_banner(
         engine=console_state.engine,
         profile=current_profile.name if current_profile else "unavailable",
@@ -1009,7 +1083,7 @@ def main() -> None:
         audit_enabled=True,
         tofu_enabled=True,
     ))
-    print("Type 'help' for commands, or 'exit' to leave.")
+    print("Type 'help' for commands, 'mode review' for command review, or 'exit' to leave.")
 
     while True:
         try:
@@ -1030,6 +1104,7 @@ def main() -> None:
         if raw_prompt.casefold() in {"heal dry-run", "heal auto --dry-run"}:
             try:
                 healing_plan = healing_manager.scan()
+                _update_console_health(console_state, healing_plan)
                 print(healing_manager.render(healing_plan))
             except HealingError as exc:
                 print(f"Healing diagnostics failed: {exc}")
@@ -1037,6 +1112,7 @@ def main() -> None:
         if raw_prompt.casefold() in {"heal review", "heal auto", "heal save-plan"}:
             try:
                 healing_plan = healing_manager.scan()
+                _update_console_health(console_state, healing_plan)
                 if raw_prompt.casefold() == "heal save-plan":
                     print(f"Healing plan saved to {healing_manager.save_plan(healing_plan)}")
                     print(healing_manager.render(healing_plan))
@@ -1058,6 +1134,7 @@ def main() -> None:
             show_audit_details=console_state.show_audit_details,
             cache_enabled=command_cache is not None and not console_state.cache_bypass,
             healing_manager=healing_manager,
+            console_state=console_state,
         ):
             continue
         if raw_prompt.casefold().startswith("dryrun>"):
@@ -1090,7 +1167,10 @@ def main() -> None:
                     targets=dry_targets,
                 )
                 print("DRY RUN — no command was approved or executed.")
-                print(render_plan(plan))
+                if _show_decision_details(console_state, risk.level):
+                    print(render_plan(plan))
+                else:
+                    print(f"Command:\n{generated}")
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting Goyathlay.")
                 return
@@ -1158,6 +1238,8 @@ def main() -> None:
             continue
         if not _maintenance_allowed(maintenance_manager, current_profile.name):
             continue
+        if console_state.mode == "debug":
+            print("Maintenance: ALLOW")
         handled_database, audit_store = _handle_database_prompt(
             raw_prompt,
             database_manager,
@@ -1165,6 +1247,7 @@ def main() -> None:
             risk_engine,
             audit_store,
             console_state.show_risk,
+            console_state.mode,
         )
         if handled_database:
             continue
@@ -1175,12 +1258,14 @@ def main() -> None:
             risk_engine,
             audit_store,
             console_state.show_risk,
+            console_state.mode,
         )
         if handled_sqlite:
             continue
         handled_mssql, audit_store = _handle_mssql_prompt(
             raw_prompt, mssql_profile_manager, approval_manager, risk_engine, audit_store,
             console_state.show_risk,
+            console_state.mode,
         )
         if handled_mssql:
             continue
@@ -1226,37 +1311,61 @@ def main() -> None:
         )
 
         try:
+            cache_state = "BYPASS" if console_state.cache_bypass else "UNAVAILABLE"
+            command_source = "Ollama"
             cached = (
                 command_cache.get_verified(cache_intent)
                 if command_cache is not None and not console_state.cache_bypass
                 else None
             )
+            if command_cache is not None and not console_state.cache_bypass:
+                cache_state = "VERIFIED HIT" if cached is not None else "MISS"
             use_cached = cached is not None and _confirm_cached_command(cache_intent, cached.command)
             if use_cached:
                 command = clean_command(cached.command)
+                command_source = "Verified cache"
             else:
                 if console_state.ai_bypass:
+                    if console_state.mode == "debug":
+                        print(f"Cache: {cache_state}\nCommand Source: Generation bypassed")
                     print("AI generation bypass is enabled and no verified cached command was selected.")
                     continue
                 if provider is None:
                     provider = _create_provider()
                 generated_command = provider.generate_command(prompt)
                 command = clean_command(generated_command)
+            if console_state.mode == "debug":
+                print(f"Cache: {cache_state}\nCommand Source: {command_source}")
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
             return
         except Exception as exc:
+            lowered_error = str(exc).casefold()
+            if "model" in lowered_error and "not found" in lowered_error:
+                console_state.health = "DEGRADED"
+                console_state.health_message = f"Missing model {console_state.engine}"
+            elif "ollama daemon" in lowered_error or "ollama service" in lowered_error or "unreachable" in lowered_error:
+                console_state.health = "CRITICAL"
+                console_state.health_message = "Ollama unavailable"
             print(render_engine_diagnostic(exc, model=console_state.engine))
             continue
 
         blocked_rule = blocklist.blocked_by(command)
         if blocked_rule is not None:
+            if console_state.mode == "debug":
+                print("Blocklist: BLOCK")
             _display_blocked_command(blocked_rule, command)
             continue
+        if console_state.mode == "debug":
+            print("Blocklist: ALLOW")
         assessment = risk_engine.assess(command)
 
         reputation = _get_reputation(reputation_engine, command)
-        authorization = _authorize_command(rbac_engine, user_context, assessment.level)
+        show_details = _show_decision_details(console_state, assessment.level)
+        authorization = _authorize_command(
+            rbac_engine, user_context, assessment.level,
+            display_decision=show_details,
+        )
         if authorization is AuthorizationDecision.DENY:
             print("Execution blocked.")
             continue
@@ -1271,21 +1380,22 @@ def main() -> None:
             for host, profile in policy_profiles
         ]
         policy = _most_restrictive_policy(policies)
-        if target_records:
+        if target_records and show_details:
             for host, profile, result in policies:
                 print(f"Host Policy: {host} -> {profile.name} ({result.decision.name})")
-        _display_command_policy(
-            command,
-            assessment.level,
-            assessment.reasons,
-            reputation,
-            policy,
-            target_display,
-            current_profile,
-            intent=prompt,
-            role=user_context.role.name,
-            show_risk=console_state.show_risk,
-        )
+        if show_details:
+            _display_command_policy(
+                command,
+                assessment.level,
+                assessment.reasons,
+                reputation,
+                policy,
+                target_display,
+                current_profile,
+                intent=prompt,
+                role=user_context.role.name,
+                show_risk=True,
+            )
         if policy.decision is PolicyDecision.DENY:
             print("Execution blocked.")
             continue
@@ -1298,7 +1408,9 @@ def main() -> None:
                 print("Policy override cancelled.")
                 continue
 
-            approved, approved_command = approval_manager.review(command, display_command=False)
+            approved, approved_command = approval_manager.review(
+                command, display_command=not show_details
+            )
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
             return
@@ -1313,8 +1425,10 @@ def main() -> None:
                 continue
             final_assessment = risk_engine.assess(approved_command)
             final_reputation = _get_reputation(reputation_engine, approved_command)
+            final_show_details = _show_decision_details(console_state, final_assessment.level)
             final_authorization = _authorize_command(
-                rbac_engine, user_context, final_assessment.level
+                rbac_engine, user_context, final_assessment.level,
+                display_decision=final_show_details,
             )
             if final_authorization is AuthorizationDecision.DENY:
                 print("Execution blocked.")
@@ -1325,18 +1439,19 @@ def main() -> None:
                 for host, profile in policy_profiles
             ]
             final_policy = _most_restrictive_policy(final_policies)
-            _display_command_policy(
-                approved_command,
-                final_assessment.level,
-                final_assessment.reasons,
-                final_reputation,
-                final_policy,
-                target_display,
-                current_profile,
-                intent=prompt,
-                role=user_context.role.name,
-                show_risk=console_state.show_risk,
-            )
+            if final_show_details:
+                _display_command_policy(
+                    approved_command,
+                    final_assessment.level,
+                    final_assessment.reasons,
+                    final_reputation,
+                    final_policy,
+                    target_display,
+                    current_profile,
+                    intent=prompt,
+                    role=user_context.role.name,
+                    show_risk=True,
+                )
             if final_policy.decision is PolicyDecision.DENY:
                 print("Execution blocked.")
                 continue
@@ -1353,6 +1468,8 @@ def main() -> None:
         # Approval and TOFU prompts can consume time; recheck at the execution boundary.
         if not _maintenance_allowed(maintenance_manager, current_profile.name):
             continue
+        if console_state.mode == "debug":
+            print("Maintenance: ALLOW (rechecked before execution)")
 
         ssh_client = None
         fanout_results: list[HostExecutionResult] | None = None

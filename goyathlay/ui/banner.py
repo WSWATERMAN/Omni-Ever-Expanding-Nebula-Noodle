@@ -26,12 +26,6 @@ def render_banner(
         "",
         "-" * 52,
         "",
-        " | ".join((
-            f"ENGINE:{engine}", f"PROFILE:{profile}", f"RBAC:{role}",
-            f"AUDIT:{'ON' if audit_enabled else 'OFF'}",
-            f"TOFU:{'ON' if tofu_enabled else 'OFF'}",
-        )),
-        "",
-        "Quick Help: help | status | profiles | inventory",
+        "Quick Help: help | status | profiles | inventory | mode",
     ]
     return "\n".join(lines)

@@ -22,9 +22,13 @@ def read_prompt(profile: str, *, hotkeys: Any = None, statusbar: Any = None) -> 
             from prompt_toolkit import prompt
             from prompt_toolkit.formatted_text import Dynamic
         except ImportError:
+            if statusbar is not None:
+                print(statusbar.render())
             return input(render_prompt(profile))
         bindings = hotkeys.bindings() if hotkeys is not None else None
         toolbar = statusbar.render if statusbar is not None else None
         message = Dynamic(lambda: render_prompt(hotkeys.state.profile_name())) if hotkeys else render_prompt(profile)
         return prompt(message, key_bindings=bindings, bottom_toolbar=toolbar)
+    if statusbar is not None:
+        print(statusbar.render())
     return input(render_prompt(profile))

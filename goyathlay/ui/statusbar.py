@@ -7,16 +7,6 @@ from typing import Any
 from pathlib import Path
 
 
-def _metrics() -> tuple[str, str]:
-    """Return CPU and memory percentages, degrading cleanly without psutil."""
-    try:
-        import psutil
-
-        return f"{psutil.cpu_percent(interval=None):.1f}%", f"{psutil.virtual_memory().percent:.1f}%"
-    except Exception:
-        return "n/a", "n/a"
-
-
 class StatusBar:
     """Render a compact, refreshable status line for the active CLI state."""
 
@@ -24,14 +14,24 @@ class StatusBar:
         self.state = state
 
     def render(self) -> str:
-        """Render current engine, governance flags, and optional system metrics."""
-        cpu, ram = _metrics()
+        """Render active health and operational telemetry in one persistent line."""
         profile = self.state.profile_name()
         cache = "BYPASS" if self.state.cache_bypass else "ON"
         note = f" | {self.state.notice}" if self.state.notice else ""
+        health = self.state.health
+        health_message = self.state.health_message
+        if health == "HEALTHY":
+            health_text = "✔ HEALTHY"
+        elif health == "CRITICAL":
+            health_text = f"✖ HEALTH: CRITICAL | {health_message}"
+        elif health == "DEGRADED":
+            health_text = f"⚠ HEALTH: DEGRADED | {health_message}"
+        else:
+            health_text = f"⚠ HEALTH: {health} | {health_message}"
         return (
-            f"GOYATHLAY | ENGINE:{self.state.engine} | PROFILE:{profile} | "
-            f"CACHE:{cache} | AUDIT:ON | CPU:{cpu} | RAM:{ram}{note}"
+            f"{health_text} | ENGINE:{self.state.engine} | PROFILE:{profile} | "
+            f"RBAC:{self.state.role} | AUDIT:ON | TOFU:ON | CACHE:{cache} | "
+            f"MODE:{self.state.mode}{note}"
         )
 
 

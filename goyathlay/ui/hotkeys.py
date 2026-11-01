@@ -21,6 +21,9 @@ class ConsoleState:
     show_risk: bool = True
     show_audit_details: bool = False
     notice: str = ""
+    mode: str = "operator"
+    health: str = "UNKNOWN"
+    health_message: str = "Health scan pending"
 
     def profile_name(self) -> str:
         """Return the active policy profile name."""
@@ -70,7 +73,7 @@ class HotkeyManager:
         event.app.invalidate()
 
     def _help(self, event: Any) -> None:
-        self.state.notice = "Help: status | profiles | profile NAME | inventory | hosts | groups | db profiles | sqlite profiles | mssql profiles | blocklist | audit | history | exit"
+        self.state.notice = "Help: status | mode operator/review/debug | profiles | inventory | audit | history | exit"
         event.app.invalidate()
 
     def handle_hotkey(self, key: str) -> str:
@@ -94,7 +97,7 @@ class HotkeyManager:
             groups = len(self.state.inventory.list_groups()) if self.state.inventory else 0
             self.state.notice = f"Inventory Summary | Hosts: {hosts} | Groups: {groups}"
         elif key == "c-h":
-            self.state.notice = "Help: status | profiles | profile NAME | inventory | hosts | groups | db profiles | sqlite profiles | mssql profiles | blocklist | audit | history | exit"
+            self.state.notice = "Help: status | mode operator/review/debug | profiles | inventory | audit | history | exit"
         else:
             raise ValueError(f"Unknown hotkey: {key}")
         return self.state.notice

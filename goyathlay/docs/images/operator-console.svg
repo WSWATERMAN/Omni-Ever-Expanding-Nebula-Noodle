@@ -1,22 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="500" viewBox="0 0 1080 500" role="img" aria-labelledby="title desc">
   <title id="title">Goyathlay operator console</title>
-  <desc id="desc">Terminal preview showing compact system status, quick help, an execution review, and persistent CPU and memory footer.</desc>
-  <rect width="1080" height="470" rx="14" fill="#101820"/>
+  <desc id="desc">Terminal preview showing quick help, a persistent health and operations footer, and the required command approval prompt.</desc>
+  <rect width="1080" height="500" rx="14" fill="#101820"/>
   <path d="M0 14a14 14 0 0 1 14-14h1052a14 14 0 0 1 14 14v42H0z" fill="#1c2b36"/>
   <circle cx="28" cy="28" r="7" fill="#ff6b6b"/><circle cx="52" cy="28" r="7" fill="#ffd166"/><circle cx="76" cy="28" r="7" fill="#06d6a0"/>
   <text x="540" y="34" text-anchor="middle" fill="#c8d5df" font-family="Menlo,Consolas,monospace" font-size="16">Goyathlay Operator Console</text>
   <g fill="#dce7ee" font-family="Menlo,Consolas,monospace" font-size="17">
     <text x="38" y="92" fill="#62d6a8">🚀 Goyathlay - Autonomous Operations Platform Initialized Successfully</text>
-    <text x="38" y="130" fill="#8eb8d8">ENGINE:qwen2.5-coder:7b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON</text>
-    <text x="38" y="163" fill="#aab9c5">Quick Help: help | status | profiles | inventory</text>
+    <text x="38" y="130" fill="#aab9c5">Quick Help: help | status | profiles | inventory | mode</text>
     <text x="38" y="210" fill="#62d6a8">goyathlay(production) ▷▶ show listening ports</text>
-    <text x="38" y="250" fill="#8296a5">----------------------------------------------------</text>
-    <text x="38" y="280" fill="#f0c674">EXECUTION PLAN</text>
-    <text x="38" y="312">Intent: show listening ports</text>
-    <text x="38" y="342">Command: ss -tulpn</text>
-    <text x="38" y="372">Risk: LOW | Reputation: Unknown | Policy: ALLOW</text>
-    <text x="38" y="402" fill="#aab9c5">Approval required: [A] Approve  [E] Edit  [C] Cancel</text>
+    <text x="38" y="250" fill="#f0c674">------------------------------------</text>
+    <text x="38" y="280" fill="#f0c674">GOYATHLAY COMMAND REVIEW</text>
+    <text x="38" y="312">Generated Command:</text>
+    <text x="38" y="342">ss -tulpn</text>
+    <text x="38" y="382" fill="#aab9c5">[A] Approve  [E] Edit  [C] Cancel</text>
+    <text x="38" y="412" fill="#aab9c5">Return Code: 0</text>
+    <text x="38" y="436" fill="#aab9c5">STDOUT: ...</text>
   </g>
-  <path d="M0 430h1080v40H0z" fill="#1c2b36"/>
-  <text x="24" y="456" fill="#8eb8d8" font-family="Menlo,Consolas,monospace" font-size="14">GOYATHLAY | ENGINE:qwen2.5-coder:7b | PROFILE:production | CACHE:ON | AUDIT:ON | CPU:14.2% | RAM:12.2%</text>
+  <path d="M0 460h1080v40H0z" fill="#1c2b36"/>
+  <text x="18" y="486" fill="#8eb8d8" font-family="Menlo,Consolas,monospace" font-size="12">✔ HEALTHY | ENGINE:qwen2.5-coder:14b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON | CACHE:ON | MODE:operator</text>
 </svg>
