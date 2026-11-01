@@ -42,6 +42,9 @@ if __package__:
         SqliteProfileManager,
         SqliteProfileNotFoundError,
     )
+    from .db.mssql import MssqlInterpreter
+    from .db.mssql_executor import MssqlExecutionError, MssqlExecutor
+    from .db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -79,6 +82,9 @@ else:  # Support: python goyathlay/goyathlay.py
         SqliteProfileManager,
         SqliteProfileNotFoundError,
     )
+    from db.mssql import MssqlInterpreter
+    from db.mssql_executor import MssqlExecutionError, MssqlExecutor
+    from db.mssql_profiles import MssqlProfileError, MssqlProfileManager, MssqlProfileNotFoundError
 
 
 def _create_provider():
@@ -280,6 +286,37 @@ def _handle_sqlite_profile_command(raw_command: str, manager: SqliteProfileManag
     return False
 
 
+def _handle_mssql_profile_command(raw_command: str, manager: MssqlProfileManager | None) -> bool:
+    """Handle SQL Server profile listing and selection."""
+    parts = raw_command.strip().split()
+    if not parts or parts[0].casefold() != "mssql":
+        return False
+    if len(parts) == 2 and parts[1].casefold() == "profiles":
+        if manager is None:
+            print("MSSQL profiles are unavailable.")
+            return True
+        print("MSSQL Profiles:")
+        for profile in manager.list_profiles():
+            marker = " (default)" if profile.name == manager.default_name else ""
+            print(f"- {profile.name}: {profile.username}@{profile.server}:{profile.port}/{profile.database}{marker}")
+        if not manager.list_profiles():
+            print("No MSSQL profiles configured.")
+        return True
+    if len(parts) == 3 and parts[1].casefold() == "profile":
+        if manager is None:
+            print("MSSQL profiles are unavailable.")
+            return True
+        try:
+            manager.set_default_profile(parts[2])
+            print(f"Current MSSQL Profile: {manager.get_default_profile().name}")
+        except MssqlProfileNotFoundError as exc:
+            print(exc)
+        except MssqlProfileError as exc:
+            print(f"Unable to select MSSQL profile:\n{exc}")
+        return True
+    return False
+
+
 def _parse_database_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
     """Return the optional profile and intent from a `db>` prompt."""
     if not raw_prompt.lstrip().casefold().startswith("db>"):
@@ -303,6 +340,20 @@ def _parse_sqlite_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
         return (None, "")
     first, separator, remainder = body.partition(" ")
     if first.casefold() in {"show", "count"}:
+        return (None, body)
+    return (first, remainder.strip() if separator else "")
+
+
+def _parse_mssql_prompt(raw_prompt: str) -> tuple[str | None, str] | None:
+    """Return an optional profile name and intent from an `mssql>` prompt."""
+    stripped = raw_prompt.lstrip()
+    if not stripped.casefold().startswith("mssql>"):
+        return None
+    body = stripped[len("mssql>"):].strip()
+    if not body:
+        return (None, "")
+    first, separator, remainder = body.partition(" ")
+    if first.casefold() == "show":
         return (None, body)
     return (first, remainder.strip() if separator else "")
 
@@ -522,6 +573,85 @@ def _handle_sqlite_prompt(
     return True, audit_store
 
 
+def _handle_mssql_prompt(
+    raw_prompt: str,
+    manager: MssqlProfileManager | None,
+    approval_manager: ApprovalManager,
+    risk_engine: RiskEngine,
+    audit_store: AuditStore | None,
+) -> tuple[bool, AuditStore | None]:
+    """Translate, validate, approve, execute, audit, and collect SQL Server feedback."""
+    parsed = _parse_mssql_prompt(raw_prompt)
+    if parsed is None:
+        return False, audit_store
+    if manager is None:
+        print("MSSQL execution is unavailable because profiles could not be loaded.")
+        return True, audit_store
+    profile_name, intent = parsed
+    if not intent:
+        print("Usage: mssql> [PROFILE] show tables")
+        return True, audit_store
+    try:
+        profile = manager.load_profile(profile_name) if profile_name else manager.get_default_profile()
+        interpreter = MssqlInterpreter()
+        query = interpreter.translate(intent)
+    except (MssqlProfileError, ValueError) as exc:
+        print(f"Unable to prepare MSSQL query:\n{exc}")
+        return True, audit_store
+
+    validation = interpreter.validate(query.sql)
+    if not validation.allowed:
+        print(f"SQL validation blocked execution:\n{validation.reason}")
+        return True, audit_store
+    assessment = risk_engine.assess(query.sql)
+    print("Database:\nMicrosoft SQL Server")
+    print(f"Profile:\n{profile.name}")
+    print(f"Host:\n{profile.server}:{profile.port}")
+    print("Generated SQL:")
+    print(query.sql)
+    print(f"Risk:\n{assessment.level.name}")
+    try:
+        approved, approved_sql = approval_manager.review(query.sql, display_command=False)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+        return True, audit_store
+    if not approved or approved_sql is None:
+        print("MSSQL query cancelled.")
+        return True, audit_store
+
+    final_validation = interpreter.validate(approved_sql)
+    if not final_validation.allowed:
+        print(f"SQL validation blocked execution:\n{final_validation.reason}")
+        return True, audit_store
+    try:
+        result = MssqlExecutor(manager).execute(profile, approved_sql)
+    except MssqlExecutionError as exc:
+        audit_store = _append_database_audit(
+            audit_store, intent=intent, query=approved_sql, profile=profile.name,
+            host=profile.server, row_count=None, success=False, engine="mssql",
+            database_path=profile.database,
+        )
+        print(f"MSSQL execution failed:\n{exc}")
+        return True, audit_store
+
+    print(f"Columns: {', '.join(result.columns)}")
+    print(f"Rows: {result.row_count}")
+    for row in result.rows:
+        print("\t".join("NULL" if value is None else str(value) for value in row))
+    audit_store = _append_database_audit(
+        audit_store, intent=intent, query=approved_sql, profile=profile.name,
+        host=profile.server, row_count=result.row_count, success=True, engine="mssql",
+        database_path=profile.database,
+    )
+    try:
+        FeedbackManager().review(intent, approved_sql)
+    except KeyboardInterrupt:
+        print("\nExiting Goyathlay.")
+    except FeedbackStoreError as exc:
+        print(f"Unable to store database feedback:\n{exc}")
+    return True, audit_store
+
+
 def _parse_target(raw_prompt: str) -> tuple[str | None, str, str]:
     """Parse local/remote target prefixes and return host, intent, cache key."""
     stripped = raw_prompt.strip()
@@ -683,6 +813,11 @@ def main() -> None:
     except SqliteProfileError as exc:
         sqlite_profile_manager = None
         print(f"SQLite profiles unavailable:\n{exc}")
+    try:
+        mssql_profile_manager = MssqlProfileManager()
+    except MssqlProfileError as exc:
+        mssql_profile_manager = None
+        print(f"MSSQL profiles unavailable:\n{exc}")
 
     print("-" * 36)
     print("GOYATHLAY")
@@ -709,6 +844,8 @@ def main() -> None:
         if _handle_db_profile_command(raw_prompt, database_manager):
             continue
         if _handle_sqlite_profile_command(raw_prompt, sqlite_profile_manager):
+            continue
+        if _handle_mssql_profile_command(raw_prompt, mssql_profile_manager):
             continue
         command_parts = raw_prompt.split(maxsplit=1)
         command_name = command_parts[0].casefold()
@@ -760,6 +897,11 @@ def main() -> None:
             audit_store,
         )
         if handled_sqlite:
+            continue
+        handled_mssql, audit_store = _handle_mssql_prompt(
+            raw_prompt, mssql_profile_manager, approval_manager, risk_engine, audit_store
+        )
+        if handled_mssql:
             continue
         if blocklist is None:
             print("Command blocked because the blocklist is unavailable.")
