@@ -116,6 +116,19 @@ DRY RUN — no command was approved or executed.
 
 Useful local commands include `profiles`, `profile NAME`, `host-profile HOST PROFILE`, `blocklist`, `maintenance`, `db profiles`, `sqlite profiles`, and `mssql profiles`. Remote execution uses inventory targets such as `remote> server01 show listening ports` or an inventory group.
 
+### Healing and repair review
+
+`heal dry-run`, `heal auto --dry-run`, or
+`python3 -m goyathlay.goyathlay --heal-auto --dry-run` performs local diagnostics
+and prints a proposed repair plan. Dry-run does not create `~/.goyathlay`, save
+the plan, append audit records, change permissions, or run repair commands. This
+read-only guarantee takes precedence over automatic report persistence; to save
+a plan explicitly, run `heal save-plan`. `heal review` asks for approval for
+each repair, and `heal auto` applies only LOW/MEDIUM repairs automatically;
+HIGH-risk actions always require a separate approval. Non-dry-run modes save
+`~/.goyathlay/healing-plan.json` and append decisions to
+`~/.goyathlay/healing-audit.jsonl`.
+
 ## Safety and scope
 
 - Local shell execution uses argument arrays and does not use `shell=True`.

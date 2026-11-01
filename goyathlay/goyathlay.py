@@ -56,6 +56,7 @@ if __package__:
     from .ui.statusbar import count_test_cases, render_status_output
     from .ui.views import render_database_plan, render_execution_plan
     from .ui.diagnostics import render_engine_diagnostic
+    from .healing import HealingManager, HealingError
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -105,6 +106,7 @@ else:  # Support: python goyathlay/goyathlay.py
     from ui.statusbar import count_test_cases, render_status_output
     from ui.views import render_database_plan, render_execution_plan
     from ui.diagnostics import render_engine_diagnostic
+    from healing import HealingManager, HealingError
 
 
 APP_VERSION = "1.0.0"
@@ -782,13 +784,24 @@ def _handle_operator_command(
     command_cache: CommandCache | None, audit_store: AuditStore | None,
     show_audit_details: bool = False,
     cache_enabled: bool = True,
+    healing_manager: HealingManager | None = None,
 ) -> bool:
     """Handle the console's status, help, inventory, audit, and history views."""
     name = command.strip().casefold()
     if name == "help":
-        print("Core Commands:\nstatus\nprofiles\nprofile <name>\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
+        print("Core Commands:\nstatus\nprofiles\nprofile <name>\nheal dry-run\nheal review\nheal auto --dry-run\nheal auto\nheal save-plan\n\nHosts:\ninventory\nhosts\ngroups\n\nDatabase:\ndb profiles\ndb profile <name>\nsqlite profiles\nmssql profiles\n\nMaintenance:\nmaintenance\nmaintenance enable\nmaintenance disable\n\nSecurity:\nblocklist\naudit\nhistory\n\nType exit or quit to leave.")
         return True
     if name == "status":
+        healing_status: dict[str, object] = {}
+        try:
+            plan = (healing_manager or HealingManager()).scan()
+            healing_status = {
+                "health": "DEGRADED" if plan["issues"] else "HEALTHY",
+                "outstanding_issues": len(plan["issues"]),
+                "last_healing_scan": plan["generated_at"],
+            }
+        except HealingError:
+            healing_status = {"health": "UNKNOWN", "outstanding_issues": 0, "last_healing_scan": "Unavailable"}
         try:
             host_count = len(host_inventory.list_hosts()) if host_inventory else 0
             group_count = len(host_inventory.list_groups()) if host_inventory else 0
@@ -802,6 +815,7 @@ def _handle_operator_command(
             audit_enabled=True, tofu_enabled=True, hosts=host_count,
             groups=group_count, profiles=profile_count,
             test_count=count_test_cases(), version=APP_VERSION,
+            **healing_status,
         ))
         return True
     if name in {"inventory", "hosts", "groups"}:
@@ -884,6 +898,30 @@ def main() -> None:
     if sys.argv[1:] == ["--version"]:
         print(f"Goyathlay v{APP_VERSION}")
         return
+    healing_args = sys.argv[1:]
+    if healing_args in (["--heal-auto", "--dry-run"], ["heal", "dry-run"], ["heal", "auto", "--dry-run"]):
+        manager = HealingManager()
+        print(manager.render(manager.scan()))
+        return
+    if healing_args in (["heal", "review"], ["heal", "auto"], ["heal", "save-plan"]):
+        manager = HealingManager()
+        try:
+            plan = manager.scan()
+            if healing_args == ["heal", "save-plan"]:
+                print(f"Healing plan saved to {manager.save_plan(plan)}")
+                print(manager.render(plan))
+            elif healing_args == ["heal", "review"]:
+                print(manager.render(plan))
+                print("Reviewing proposed repairs. Each repair requires a separate approval.")
+                print(manager.render(manager.review(plan), dry_run=False))
+            else:
+                print(manager.render(manager.auto_heal(plan), dry_run=False))
+        except (HealingError, KeyboardInterrupt, EOFError) as exc:
+            if isinstance(exc, (KeyboardInterrupt, EOFError)):
+                print("\nHealing cancelled.")
+            else:
+                print(f"Healing failed: {exc}")
+        return
     provider = None
     try:
         ollama_error = _check_ollama_installation()
@@ -963,6 +1001,7 @@ def main() -> None:
     )
     hotkeys = HotkeyManager(console_state)
     statusbar = StatusBar(console_state)
+    healing_manager = HealingManager()
     print(render_banner(
         engine=console_state.engine,
         profile=current_profile.name if current_profile else "unavailable",
@@ -988,11 +1027,37 @@ def main() -> None:
             return
         if not raw_prompt:
             continue
+        if raw_prompt.casefold() in {"heal dry-run", "heal auto --dry-run"}:
+            try:
+                healing_plan = healing_manager.scan()
+                print(healing_manager.render(healing_plan))
+            except HealingError as exc:
+                print(f"Healing diagnostics failed: {exc}")
+            continue
+        if raw_prompt.casefold() in {"heal review", "heal auto", "heal save-plan"}:
+            try:
+                healing_plan = healing_manager.scan()
+                if raw_prompt.casefold() == "heal save-plan":
+                    print(f"Healing plan saved to {healing_manager.save_plan(healing_plan)}")
+                    print(healing_manager.render(healing_plan))
+                elif raw_prompt.casefold() == "heal review":
+                    print(healing_manager.render(healing_plan))
+                    print("Reviewing proposed repairs. Each repair requires a separate approval.")
+                    print(healing_manager.render(healing_manager.review(healing_plan), dry_run=False))
+                else:
+                    print(healing_manager.render(healing_manager.auto_heal(healing_plan), dry_run=False))
+            except (HealingError, KeyboardInterrupt, EOFError) as exc:
+                if isinstance(exc, (KeyboardInterrupt, EOFError)):
+                    print("\nHealing cancelled.")
+                else:
+                    print(f"Healing failed: {exc}")
+            continue
         if _handle_operator_command(
             raw_prompt, profile_manager=profile_manager, current_profile=current_profile,
             host_inventory=host_inventory, command_cache=command_cache, audit_store=audit_store,
             show_audit_details=console_state.show_audit_details,
             cache_enabled=command_cache is not None and not console_state.cache_bypass,
+            healing_manager=healing_manager,
         ):
             continue
         if raw_prompt.casefold().startswith("dryrun>"):

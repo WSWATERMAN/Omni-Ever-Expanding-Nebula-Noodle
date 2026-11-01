@@ -57,7 +57,8 @@ def count_test_cases(test_directory: str | Path | None = None) -> int | None:
 def render_status_output(*, engine: str, profile: str, role: str, cache_enabled: bool,
                          audit_enabled: bool, tofu_enabled: bool, hosts: int,
                          groups: int, profiles: int, test_count: int | None = None,
-                         version: str = "1.0.0") -> str:
+                         version: str = "1.0.0", health: str = "UNKNOWN",
+                         outstanding_issues: int = 0, last_healing_scan: str = "Never") -> str:
     """Render the explicit ``status`` command and current test-case count."""
     tests = "Unavailable" if test_count is None else str(test_count)
     return "\n".join([
@@ -69,4 +70,6 @@ def render_status_output(*, engine: str, profile: str, role: str, cache_enabled:
         "",
         f"Hosts:          {hosts}", f"Groups:         {groups}",
         f"Profiles:       {profiles}", f"Test Count:     {tests}",
+        f"Health:         {health}", f"Outstanding Issues: {outstanding_issues}",
+        f"Last Healing Scan: {last_healing_scan}",
     ])

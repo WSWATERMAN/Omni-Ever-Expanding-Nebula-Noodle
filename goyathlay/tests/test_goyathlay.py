@@ -103,6 +103,23 @@ class GoyathlayCliTests(unittest.TestCase):
             goyathlay.main()
         self.assertIn("Goyathlay v1.0.0", output.getvalue())
 
+    def test_heal_auto_dry_run_uses_read_only_diagnostics(self):
+        manager = Mock()
+        manager.scan.return_value = {"generated_at": "now", "issues": []}
+        manager.render.return_value = "HEALING DRY RUN"
+        output = io.StringIO()
+        with (
+            patch.object(goyathlay.sys, "argv", ["goyathlay", "--heal-auto", "--dry-run"]),
+            patch.object(goyathlay, "HealingManager", return_value=manager),
+            redirect_stdout(output),
+        ):
+            goyathlay.main()
+        manager.scan.assert_called_once_with()
+        manager.save_plan.assert_not_called()
+        manager.review.assert_not_called()
+        manager.auto_heal.assert_not_called()
+        self.assertIn("HEALING DRY RUN", output.getvalue())
+
     def test_startup_displays_ollama_install_guidance(self):
         guidance = "Ollama Python package missing"
         with patch.object(goyathlay, "_check_ollama_installation", return_value=guidance):
