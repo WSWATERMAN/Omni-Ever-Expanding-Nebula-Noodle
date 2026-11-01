@@ -22,9 +22,23 @@ python3 scripts/install_goyathlay.py
 ./run_goyathlay.sh
 ```
 
-The installer requires Python 3.12+, repairs or creates `.venv-goyathlay`, installs the dependencies in the root `requirements.txt`, checks Ollama, and pulls `qwen2.5-coder:7b` if missing. It validates a local command-generation smoke test and does not execute the generated command. A rebuilt environment is staged and only replaces the current venv after validation succeeds. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
+The installer requires Python 3.12+, repairs or creates `.venv-goyathlay`, installs the dependencies in the root `requirements.txt`, checks Ollama, and verifies the configured model (default `qwen2.5-coder:14b`). It pulls that model if missing. It validates a local command-generation smoke test and does not execute the generated command. A rebuilt environment is staged and only replaces the current venv after validation succeeds. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
 
-The provider defaults to `qwen2.5-coder:14b`. The installer uses `qwen2.5-coder:7b` for its required smoke test. Set `GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b` (or another locally pulled model) when launching to select the 7B model. Before generating a command, the CLI checks that the Python package, local Ollama daemon, and configured model are available.
+The provider and installer default to `qwen2.5-coder:14b`. The launcher checks that the Ollama executable and daemon are available and that the selected model appears in `ollama list` before starting the UI. If the model is missing, it offers to pull it in an interactive terminal and exits with install instructions when declined or running non-interactively. Pass `--heal-auto` to pull the configured model automatically.
+
+```sh
+# Default model
+./run_goyathlay.sh
+
+# Use an already-installed alternate model
+GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b ./run_goyathlay.sh
+
+# Pull the configured model automatically if missing
+./run_goyathlay.sh --heal-auto
+
+# Install a model separately
+ollama pull qwen2.5-coder:14b
+```
 
 Successful installer output ends with:
 

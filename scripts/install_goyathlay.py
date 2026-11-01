@@ -15,7 +15,7 @@ from typing import Callable, Sequence
 
 
 MINIMUM_PYTHON = (3, 12)
-REQUIRED_MODEL = "qwen2.5-coder:7b"
+DEFAULT_MODEL = "qwen2.5-coder:14b"
 REQUIRED_IMPORTS = {"ollama": "ollama", "paramiko": "paramiko"}
 
 
@@ -67,6 +67,7 @@ class Installer:
         self.sleeper = sleeper
         self.emit = emit
         self.ollama_executable: str | None = None
+        self.model = os.environ.get("GOYATHLAY_OLLAMA_MODEL") or DEFAULT_MODEL
         self._owns_staging = False
 
     def _report(self, step: str, cause: str, attempted: str, result: str) -> None:
@@ -286,19 +287,19 @@ class Installer:
 
     def verify_model(self, executable: str, listing: str) -> None:
         """Pull the required local model only when absent, then verify it."""
-        if _has_model(listing, REQUIRED_MODEL):
-            self._report("Model", f"{REQUIRED_MODEL} is installed.", "No model download needed.", "OK.")
+        if _has_model(listing, self.model):
+            self._report("Model", f"{self.model} is installed.", "No model download needed.", "OK.")
             return
-        self._report("Model", f"{REQUIRED_MODEL} is missing.",
-                     f"Run `ollama pull {REQUIRED_MODEL}`.", "Downloading model.")
-        pull = self._run([executable, "pull", REQUIRED_MODEL], check=False, timeout=3600)
+        self._report("Model", f"{self.model} is missing.",
+                     f"Run `ollama pull {self.model}`.", "Downloading model.")
+        pull = self._run([executable, "pull", self.model], check=False, timeout=3600)
         if pull.returncode != 0:
             details = (pull.stderr or pull.stdout or "No Ollama output.").strip()
-            raise InstallationError(f"Failed to pull model {REQUIRED_MODEL}.\n{details}")
+            raise InstallationError(f"Failed to pull model {self.model}.\n{details}")
         listing = self._ollama_list(executable)
-        if listing.returncode != 0 or not _has_model(listing.stdout, REQUIRED_MODEL):
-            raise InstallationError(f"Model {REQUIRED_MODEL} is still unavailable after `ollama pull`.")
-        self._report("Model", f"{REQUIRED_MODEL} was missing.", "Pulled model and rechecked `ollama list`.", "OK.")
+        if listing.returncode != 0 or not _has_model(listing.stdout, self.model):
+            raise InstallationError(f"Model {self.model} is still unavailable after `ollama pull`.")
+        self._report("Model", f"{self.model} was missing.", "Pulled model and rechecked `ollama list`.", "OK.")
 
     def ensure_runtime_directory(self) -> Path:
         """Create and permission-check the user's Goyathlay data directory."""
@@ -321,7 +322,7 @@ class Installer:
         version = self._run([python, "-m", "goyathlay.goyathlay", "--version"])
         self.emit(version.stdout.strip())
         env = os.environ.copy()
-        env["GOYATHLAY_OLLAMA_MODEL"] = REQUIRED_MODEL
+        env["GOYATHLAY_OLLAMA_MODEL"] = self.model
         smoke = self._run(
             [python, "-c", "from goyathlay.providers.ollama_provider import OllamaProvider; "
              "command=OllamaProvider().generate_command('show listening ports'); "

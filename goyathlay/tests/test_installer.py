@@ -45,6 +45,12 @@ class InstallerHelperTests(unittest.TestCase):
         self.assertTrue(_has_model(listing, "qwen2.5-coder:7b"))
         self.assertFalse(_has_model(listing, "qwen2.5:1.5b"))
 
+    def test_installer_uses_configured_model_or_application_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(Installer(temp).model, "qwen2.5-coder:14b")
+            with patch.dict("os.environ", {"GOYATHLAY_OLLAMA_MODEL": "qwen2.5-coder:7b"}):
+                self.assertEqual(Installer(temp).model, "qwen2.5-coder:7b")
+
     def test_broken_venv_is_detected(self):
         with tempfile.TemporaryDirectory() as temp:
             installer = Installer(temp, runner=Mock())
@@ -102,7 +108,7 @@ class InstallerHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             installer = Installer(temp, runner=Mock(side_effect=[
                 subprocess.CompletedProcess([], 0, "download complete", ""),
-                subprocess.CompletedProcess([], 0, "NAME ID SIZE\nqwen2.5-coder:7b abc 4GB\n", ""),
+                subprocess.CompletedProcess([], 0, "NAME ID SIZE\nqwen2.5-coder:14b abc 9GB\n", ""),
             ]), emit=Mock())
             installer.verify_model("/usr/bin/ollama", "NAME ID SIZE\nqwen2.5:1.5b abc 1GB\n")
         self.assertEqual(installer.runner.call_count, 2)

@@ -66,4 +66,4 @@ if ! "$VENV_PYTHON" -c 'import ollama' >/dev/null 2>&1; then
     exit 1
 fi
 
-exec "$VENV_PYTHON" -m goyathlay.goyathlay "$@"
+exec "$VENV_PYTHON" -m goyathlay.launcher "$@"
