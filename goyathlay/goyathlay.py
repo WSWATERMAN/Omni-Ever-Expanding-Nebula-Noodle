@@ -53,8 +53,9 @@ if __package__:
     from .ui.hotkeys import ConsoleState, HotkeyManager
     from .ui.prompt import read_prompt
     from .ui.statusbar import StatusBar
-    from .ui.statusbar import render_status_output
+    from .ui.statusbar import count_test_cases, render_status_output
     from .ui.views import render_database_plan, render_execution_plan
+    from .ui.diagnostics import render_engine_diagnostic
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -101,8 +102,12 @@ else:  # Support: python goyathlay/goyathlay.py
     from ui.hotkeys import ConsoleState, HotkeyManager
     from ui.prompt import read_prompt
     from ui.statusbar import StatusBar
-    from ui.statusbar import render_status_output
+    from ui.statusbar import count_test_cases, render_status_output
     from ui.views import render_database_plan, render_execution_plan
+    from ui.diagnostics import render_engine_diagnostic
+
+
+APP_VERSION = "1.0.0"
 
 
 def _create_provider():
@@ -776,6 +781,7 @@ def _handle_operator_command(
     current_profile: PolicyProfile | None, host_inventory: HostInventory | None,
     command_cache: CommandCache | None, audit_store: AuditStore | None,
     show_audit_details: bool = False,
+    cache_enabled: bool = True,
 ) -> bool:
     """Handle the console's status, help, inventory, audit, and history views."""
     name = command.strip().casefold()
@@ -792,9 +798,10 @@ def _handle_operator_command(
         print(render_status_output(
             engine=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
             profile=current_profile.name if current_profile else "unavailable",
-            role="ADMIN", cache_enabled=command_cache is not None,
+            role="ADMIN", cache_enabled=cache_enabled,
             audit_enabled=True, tofu_enabled=True, hosts=host_count,
             groups=group_count, profiles=profile_count,
+            test_count=count_test_cases(), version=APP_VERSION,
         ))
         return True
     if name in {"inventory", "hosts", "groups"}:
@@ -875,15 +882,18 @@ def _append_audit_record(
 def main() -> None:
     """Run the prompt, generate, approve, and execute loop."""
     if sys.argv[1:] == ["--version"]:
-        print("Goyathlay v1.0.0")
+        print(f"Goyathlay v{APP_VERSION}")
         return
     provider = None
     try:
         ollama_error = _check_ollama_installation()
-    except ImportError:
-        ollama_error = "Ollama Python package is not installed.\nRun:\npip install ollama"
+    except Exception as exc:
+        ollama_error = exc
     if ollama_error:
-        print(ollama_error)
+        print(render_engine_diagnostic(
+            ollama_error,
+            model=os.environ.get("GOYATHLAY_OLLAMA_MODEL", "qwen2.5-coder:14b"),
+        ))
     approval_manager = ApprovalManager()
     execution_manager = ExecutionManager()
     risk_engine = RiskEngine()
@@ -982,6 +992,7 @@ def main() -> None:
             raw_prompt, profile_manager=profile_manager, current_profile=current_profile,
             host_inventory=host_inventory, command_cache=command_cache, audit_store=audit_store,
             show_audit_details=console_state.show_audit_details,
+            cache_enabled=command_cache is not None and not console_state.cache_bypass,
         ):
             continue
         if raw_prompt.casefold().startswith("dryrun>"):
@@ -1170,7 +1181,7 @@ def main() -> None:
             print("\nExiting Goyathlay.")
             return
         except Exception as exc:
-            print(f"Unable to generate command:\n{exc}")
+            print(render_engine_diagnostic(exc, model=console_state.engine))
             continue
 
         blocked_rule = blocklist.blocked_by(command)

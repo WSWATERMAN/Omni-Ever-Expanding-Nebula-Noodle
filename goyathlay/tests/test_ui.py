@@ -8,7 +8,8 @@ from goyathlay.profiles import ProfileManager
 from goyathlay.ui.banner import render_banner
 from goyathlay.ui.hotkeys import ConsoleState, HotkeyManager
 from goyathlay.ui.prompt import render_prompt
-from goyathlay.ui.statusbar import StatusBar, render_status_output
+from goyathlay.ui.diagnostics import render_engine_diagnostic
+from goyathlay.ui.statusbar import StatusBar, count_test_cases, render_status_output
 from goyathlay.ui.views import render_database_plan, render_execution_plan
 
 
@@ -32,7 +33,8 @@ class OperatorConsoleTests(unittest.TestCase):
         self.assertIn("Goyathlay - Autonomous Operations Platform", banner)
         self.assertIn("[Ctrl+B] Cache Bypass", banner)
         self.assertIn("[Ctrl+H] Help", banner)
-        self.assertIn("TOFU: Enabled", banner)
+        self.assertIn("ENGINE:qwen2.5-coder:7b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON", banner)
+        self.assertIn("Quick Help: help | status | profiles | inventory", banner)
 
     def test_prompt_rendering_and_profile_update(self):
         self.assertEqual(render_prompt("production"), "goyathlay(production) ▷▶ ")
@@ -56,12 +58,13 @@ class OperatorConsoleTests(unittest.TestCase):
         text = render_status_output(
             engine="qwen2.5-coder:7b", profile="production", role="ADMIN",
             cache_enabled=True, audit_enabled=True, tofu_enabled=True,
-            hosts=12, groups=4, profiles=4,
+            hosts=12, groups=4, profiles=4, test_count=4,
         )
         self.assertIn("Hosts:          12", text)
         self.assertIn("Groups:         4", text)
         self.assertIn("Version:        1.0.0", text)
-        self.assertIn("python3 -m unittest", text)
+        self.assertIn("Role:           ADMIN", text)
+        self.assertIn("Test Count:     4", text)
 
     def test_execution_plan_rendering(self):
         text = render_execution_plan(
@@ -87,12 +90,30 @@ class OperatorConsoleTests(unittest.TestCase):
     def test_statusbar_updates_when_state_changes(self):
         statusbar = StatusBar(self.state)
         first = statusbar.render()
-        self.assertIn("PROFILE:production", first)
+        self.assertIn("GOYATHLAY | ENGINE:qwen2.5-coder:7b | PROFILE:production | CACHE:ON | AUDIT:ON | CPU:", first)
         HotkeyManager(self.state).handle_hotkey("Ctrl+B")
         self.state.cycle_profile()
         second = statusbar.render()
         self.assertIn("PROFILE:emergency", second)
         self.assertIn("CACHE:BYPASS", second)
+
+    def test_test_count_counts_unittest_methods(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "test_sample.py"
+            path.write_text("class Tests:\n def test_one(self): pass\n def test_two(self): pass\n", encoding="utf-8")
+            self.assertEqual(count_test_cases(temp), 2)
+
+    def test_engine_diagnostics_are_structured_and_actionable(self):
+        output = render_engine_diagnostic("No module named 'ollama'", model="qwen:7b")
+        self.assertEqual(output, "Engine Status: WARNING\nReason: Ollama Python package missing\nSuggested Fix:\npython3 scripts/install_goyathlay.py")
+        self.assertNotIn("Traceback", output)
+
+    def test_engine_diagnostics_cover_daemon_and_model(self):
+        daemon = render_engine_diagnostic("Ollama daemon is not running", model="qwen:7b")
+        model = render_engine_diagnostic("Model qwen:7b not found", model="qwen:7b")
+        self.assertIn("Suggested Fix:\nollama serve", daemon)
+        self.assertIn("Reason: Ollama model qwen:7b is missing", model)
+        self.assertIn("ollama pull qwen:7b", model)
 
 
 if __name__ == "__main__":

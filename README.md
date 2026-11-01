@@ -46,13 +46,13 @@ Virtual environments are specific to their Python installation and operating sys
 
 ## Example
 
+![Goyathlay operator console preview](goyathlay/docs/images/operator-console.svg)
+
 ```text
 🚀 Goyathlay - Autonomous Operations Platform Initialized Successfully
-Engine: qwen2.5-coder:7b
-Profile: production
-Role: ADMIN
-Audit: Enabled
-TOFU: Enabled
+ENGINE:qwen2.5-coder:7b | PROFILE:production | RBAC:ADMIN | AUDIT:ON | TOFU:ON
+
+Quick Help: help | status | profiles | inventory
 
 goyathlay(production) ▷▶ show listening ports
 ----------------------------------------------------
@@ -101,6 +101,11 @@ maintenance, database, and remote-target commands. Database operations use the
 same plain-text plan framing with engine, profile, SQL, risk, and validation
 status. A network plan renderer is available for future network interpreter
 integration; this UX update does not add network interpreter commands.
+
+The `status` command reports version, engine, profile, role, audit, TOFU,
+cache, inventory host and group totals, and the discovered unittest case count.
+Engine setup failures use a short warning with a specific reason and repair
+command instead of a traceback.
 
 The `dryrun>` prefix previews a generated command and local policy result without approving or executing it:
 

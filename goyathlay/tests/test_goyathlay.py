@@ -104,10 +104,27 @@ class GoyathlayCliTests(unittest.TestCase):
         self.assertIn("Goyathlay v1.0.0", output.getvalue())
 
     def test_startup_displays_ollama_install_guidance(self):
-        guidance = "Ollama Python package is not installed.\nRun:\npip install ollama"
+        guidance = "Ollama Python package missing"
         with patch.object(goyathlay, "_check_ollama_installation", return_value=guidance):
             output, *_ = self.run_cli(["exit"])
-        self.assertIn(guidance, output)
+        self.assertIn("Engine Status: WARNING", output)
+        self.assertIn(f"Reason: {guidance}", output)
+        self.assertIn("Suggested Fix:\npython3 scripts/install_goyathlay.py", output)
+
+    def test_startup_shows_compact_state_and_quick_help(self):
+        output, *_ = self.run_cli(["exit"])
+        self.assertIn(
+            "ENGINE:qwen2.5-coder:14b | PROFILE:staging | RBAC:ADMIN | AUDIT:ON | TOFU:ON",
+            output,
+        )
+        self.assertIn("Quick Help: help | status | profiles | inventory", output)
+
+    def test_status_command_shows_runtime_and_test_count(self):
+        output, *_ = self.run_cli(["status", "exit"])
+        for label in ("Version:", "Engine:", "Profile:", "Role:", "Audit:", "TOFU:",
+                      "Cache:", "Hosts:", "Groups:", "Test Count:"):
+            self.assertIn(label, output)
+        self.assertRegex(output, r"Test Count:\s+\d+")
 
     def test_dryrun_builds_plan_without_approval_or_execution(self):
         output, provider, _, approval, execution, _, _, _, _, _ = self.run_cli(
@@ -339,7 +356,9 @@ class GoyathlayCliTests(unittest.TestCase):
             ["show listening ports", "quit"], provider_error=RuntimeError("Ollama unavailable")
         )
 
-        self.assertIn("Unable to generate command:\nOllama unavailable", output)
+        self.assertIn("Engine Status: WARNING", output)
+        self.assertIn("Reason: Local Ollama engine is unavailable", output)
+        self.assertNotIn("Traceback", output)
         provider.generate_command.assert_called_once_with("show listening ports")
         self.assertEqual(mocked_input.call_count, 2)
         execution.execute.assert_not_called()
