@@ -1,0 +1,3 @@
+# Optional database drivers; install only the engine integrations in use.
+psycopg[binary]
+pyodbc

@@ -1,4 +1,3 @@
+# Core CLI dependencies. Ollama inference remains local.
 ollama
 paramiko
-pyyaml
-rich

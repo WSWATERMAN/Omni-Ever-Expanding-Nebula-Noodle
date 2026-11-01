@@ -1,30 +1,70 @@
-# Omni-Ever-Expanding-Nebula-Noodle
+# Goyathlay
 
-> **Version:** v1.0.0  
-> **Codename:** Akasha  
-> **Status:** 🚀 Production Ready  
+Goyathlay is a local-first shell and infrastructure assistant under active development. Natural-language command generation uses a local Ollama server; generated shell commands require explicit review before execution. Database and SSH operations add their own validation, trust, approval, and audit boundaries.
 
-Omni-Ever-Expanding-Nebula-Noodle is a multi-dimensional, Universal AI Shell environment. It seamlessly integrates real-time terminal operations, secure remote infrastructure orchestration, and structural translations wrapped directly into an interactive AI companion terminal.
+The repository also retains the original `akasha.py` application and installer. Goyathlay development does not remove that legacy functionality.
 
-## 🌟 Features
+## Requirements
 
-- Universal AI Core Terminal: Driven by the next-generation google-genai automation engine for contextual code translation, intelligence parsing, and direct environment feedback loops.
-- Adaptive Local Training Engine (LLM Optimization): Captures and evaluates historic execution telemetry and user feedback directly on the edge. This localized training cache dramatically optimizes token consumption pipelines, bypassing external cloud LLM API roundtrips for redundant command structures.
-- Stateful Confidence Telemetry Caching: Leverages an isolated local SQLite layer (.akasha_private.db) to log transactional executions, automatically intercepting recurring natural language intents and resolving them locally with near-zero latency whenever confidence thresholds are met (>= 80%).
-- Secure SSH Terminal Wrapping: Integrates paramiko under the hood to establish persistent channels, enabling interactive remote execution and full AI-interception workflows over secure connections.
+- Python 3.12 or later
+- A locally installed Ollama server and a pulled local model for natural-language shell prompts
+- Optional: PostgreSQL `psycopg` or SQL Server `pyodbc` driver for those database integrations
+- Optional: an ODBC SQL Server driver for the host operating system
 
----
+No public LLM provider is used. Ollama itself must be available locally. SSH, database, and Meraki API operations naturally require access to their target services when used.
 
-## 📦 Prerequisites & System Dependencies
+## Install and run
 
-This platform is optimized for macOS environments. Ensure your system meets the baseline interpreter requirements:
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r goyathlay/requirements.txt
+ollama pull qwen2.5-coder:7b
+export GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b
+python3 goyathlay/goyathlay.py
+```
 
-- **Python:** Runtime Version `>= 3.9`
-- **Core Library Matrix:**
-  - `google-genai` (AI Engine Translation Layers)
-  - `psutil` (System Diagnostic Instrumentation & Resource Telemetry)
-  - `python-dotenv` (Safe Environmental Injections)
-  - `paramiko` (Interactive Remote Connection Orchestration)
-  - `prompt-toolkit` (Advanced Terminal Formatting & Text Buffering)
+The provider defaults to `qwen2.5-coder:14b`. Set `GOYATHLAY_OLLAMA_MODEL=qwen2.5-coder:7b` (or another locally pulled model) to select a different model. Optional drivers can be installed separately, for example `python3 -m pip install 'psycopg[binary]'` or `python3 -m pip install pyodbc`.
 
----
+## Example
+
+```text
+goyathlay> show listening ports
+Generated Command:
+ss -tulpn
+Risk: LOW
+...
+[A] Approve
+[E] Edit
+[C] Cancel
+Selection: A
+Return Code: 0
+```
+
+The `dryrun>` prefix previews a generated command and local policy result without approving or executing it:
+
+```text
+goyathlay> dryrun> show listening ports
+DRY RUN — no command was approved or executed.
+```
+
+Useful local commands include `profiles`, `profile NAME`, `host-profile HOST PROFILE`, `blocklist`, `maintenance`, `db profiles`, `sqlite profiles`, and `mssql profiles`. Remote execution uses inventory targets such as `remote> server01 show listening ports` or an inventory group.
+
+## Safety and scope
+
+- Local shell execution uses argument arrays and does not use `shell=True`.
+- Risk, reputation, blocklist, maintenance, RBAC, policy profiles, and explicit approval apply to shell execution.
+- SSH enrolls unknown host fingerprints through explicit TOFU decisions. Parallel fan-out enrolls hosts sequentially before concurrent command execution.
+- SQLite queries use read-only connections and validation. PostgreSQL and SQL Server should use database accounts restricted to read-only access. SQL validation is a lexical guard, not a SQL parser or sandbox.
+- Meraki support currently describes fixed GET operations only; it does not issue HTTP requests.
+- Authentication primitives and rollback plan generation exist, but account login/bootstrap and rollback execution are not integrated into the main CLI.
+- This is an alpha/development project, not a production-certified security boundary. Review generated operations and grant least privilege to service accounts.
+
+## Development checks
+
+```sh
+python3 -m unittest discover -s goyathlay/tests -v
+git diff --check
+```
+
+See [docs/architecture.md](goyathlay/docs/architecture.md), [docs/security.md](goyathlay/docs/security.md), [docs/database.md](goyathlay/docs/database.md), [docs/network.md](goyathlay/docs/network.md), and [docs/roadmap.md](goyathlay/docs/roadmap.md).
