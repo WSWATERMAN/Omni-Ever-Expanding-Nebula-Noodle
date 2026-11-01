@@ -14,10 +14,11 @@ from goyathlay.rbac import AuthorizationDecision
 from goyathlay.ssh.executor import SSHExecutionResult
 from goyathlay.inventory import HostRecord, InventoryError
 from goyathlay.fanout import HostExecutionResult
+from goyathlay.profiles import PolicyProfile
 
 
 class GoyathlayCliTests(unittest.TestCase):
-    def run_cli(self, prompts, provider_result="netstat -tuln", approval_result=(True, "netstat -tuln"), execution_result=None, provider_error=None, execution_error=None, cache_entry=None, feedback_result=FeedbackResult.SUCCESS, reputation_result=None, authorization_result=AuthorizationDecision.ALLOW, inventory_targets=None, fanout_results=None):
+    def run_cli(self, prompts, provider_result="netstat -tuln", approval_result=(True, "netstat -tuln"), execution_result=None, provider_error=None, execution_error=None, cache_entry=None, feedback_result=FeedbackResult.SUCCESS, reputation_result=None, authorization_result=AuthorizationDecision.ALLOW, inventory_targets=None, fanout_results=None, profile_name="staging", blocked_rule=None, blocked_rules_by_command=None):
         provider = Mock()
         if provider_error:
             provider.generate_command.side_effect = provider_error
@@ -46,6 +47,27 @@ class GoyathlayCliTests(unittest.TestCase):
         inventory.resolve_target.return_value = inventory_targets or []
         fanout_executor = Mock()
         fanout_executor.execute.return_value = fanout_results or []
+        profiles = {
+            "development": PolicyProfile("development", True, True, 0),
+            "staging": PolicyProfile("staging", True, True, 25),
+            "production": PolicyProfile("production", False, False, 50),
+            "emergency": PolicyProfile("emergency", True, True, 0),
+        }
+        profile_manager = Mock()
+        profile_manager.get_default_profile.return_value = profiles[profile_name]
+        profile_manager.list_profiles.return_value = list(profiles.values())
+        profile_manager.load_profile.side_effect = profiles.__getitem__
+        maintenance_manager = Mock()
+        maintenance_manager.enabled = False
+        maintenance_manager.list_windows.return_value = []
+        maintenance_manager.is_allowed.return_value = True
+        command_blocklist = Mock()
+        command_blocklist.list_commands.return_value = ["rm -rf /", "mkfs", "dd if="]
+        if blocked_rules_by_command is not None:
+            command_blocklist.blocked_by.side_effect = blocked_rules_by_command.get
+        else:
+            command_blocklist.blocked_by.return_value = blocked_rule
+        command_blocklist.is_blocked.side_effect = lambda command: command_blocklist.blocked_by(command) is not None
 
         output = io.StringIO()
         with (
@@ -59,6 +81,9 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "RbacEngine", return_value=rbac_engine),
             patch.object(goyathlay, "HostInventory", return_value=inventory),
             patch.object(goyathlay, "FanoutExecutor", return_value=fanout_executor),
+            patch.object(goyathlay, "ProfileManager", return_value=profile_manager),
+            patch.object(goyathlay, "MaintenanceManager", return_value=maintenance_manager),
+            patch.object(goyathlay, "CommandBlocklist", return_value=command_blocklist),
             patch.object(goyathlay, "clean_command", wraps=goyathlay.clean_command) as cleaner,
             patch("builtins.input", side_effect=prompts) as mocked_input,
             redirect_stdout(output),
@@ -66,6 +91,101 @@ class GoyathlayCliTests(unittest.TestCase):
             goyathlay.main()
 
         return output.getvalue(), provider, cleaner, approval_manager, execution_manager, mocked_input, feedback_manager, command_cache, audit_store, reputation_engine
+
+    def test_maintenance_cli_lists_adds_and_removes_windows(self):
+        manager = Mock()
+        manager.enabled = False
+        manager.list_windows.return_value = [
+            goyathlay.MaintenanceWindow("production", ["SAT", "SUN"], "01:00", "05:00")
+        ]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertTrue(goyathlay._handle_maintenance_command("maintenance", manager))
+            self.assertTrue(goyathlay._handle_maintenance_command("maintenance enable", manager))
+            self.assertTrue(
+                goyathlay._handle_maintenance_command(
+                    "maintenance add production SAT,SUN 01:00 05:00", manager
+                )
+            )
+            self.assertTrue(goyathlay._handle_maintenance_command("maintenance remove production", manager))
+
+        manager.set_enabled.assert_called_once_with(True)
+        manager.add_window.assert_called_once_with(
+            goyathlay.MaintenanceWindow("production", ["SAT", "SUN"], "01:00", "05:00")
+        )
+        manager.remove_window.assert_called_once_with("production")
+        self.assertIn("production: SAT,SUN 01:00-05:00", output.getvalue())
+
+    def test_maintenance_block_stops_before_blocklist_and_approval(self):
+        provider = Mock()
+        provider.generate_command.return_value = "ls -la"
+        approval = Mock()
+        execution = Mock()
+        maintenance = Mock()
+        maintenance.is_allowed.return_value = False
+        blocklist = Mock()
+        blocklist.blocked_by.return_value = None
+        output = io.StringIO()
+        with (
+            patch.object(goyathlay, "_create_provider", return_value=provider),
+            patch.object(goyathlay, "ApprovalManager", return_value=approval),
+            patch.object(goyathlay, "ExecutionManager", return_value=execution),
+            patch.object(goyathlay, "FeedbackManager"),
+            patch.object(goyathlay, "CommandCache"),
+            patch.object(goyathlay, "AuditStore"),
+            patch.object(goyathlay, "ReputationEngine"),
+            patch.object(goyathlay, "RbacEngine"),
+            patch.object(goyathlay, "HostInventory"),
+            patch.object(goyathlay, "ProfileManager") as profiles,
+            patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
+            patch.object(goyathlay, "CommandBlocklist", return_value=blocklist),
+            patch("builtins.input", side_effect=["show files", "exit"]),
+            redirect_stdout(output),
+        ):
+            profiles.return_value.get_default_profile.return_value = PolicyProfile("production", False, False, 50)
+            goyathlay.main()
+
+        self.assertIn("Execution Blocked", output.getvalue())
+        self.assertIn("Outside approved maintenance window", output.getvalue())
+        blocklist.blocked_by.assert_not_called()
+        approval.review.assert_not_called()
+        execution.execute.assert_not_called()
+
+    def test_maintenance_window_is_rechecked_after_approval(self):
+        provider = Mock()
+        provider.generate_command.return_value = "ls -la"
+        approval = Mock()
+        approval.review.return_value = (True, "ls -la")
+        execution = Mock()
+        maintenance = Mock()
+        maintenance.is_allowed.side_effect = [True, False]
+        output = io.StringIO()
+        with (
+            patch.object(goyathlay, "_create_provider", return_value=provider),
+            patch.object(goyathlay, "ApprovalManager", return_value=approval),
+            patch.object(goyathlay, "ExecutionManager", return_value=execution),
+            patch.object(goyathlay, "FeedbackManager"),
+            patch.object(goyathlay, "CommandCache") as cache_class,
+            patch.object(goyathlay, "AuditStore"),
+            patch.object(goyathlay, "ReputationEngine") as reputation_class,
+            patch.object(goyathlay, "RbacEngine"),
+            patch.object(goyathlay, "HostInventory"),
+            patch.object(goyathlay, "ProfileManager") as profiles,
+            patch.object(goyathlay, "MaintenanceManager", return_value=maintenance),
+            patch.object(goyathlay, "CommandBlocklist") as blocklist_class,
+            patch("builtins.input", side_effect=["show files", "exit"]),
+            redirect_stdout(output),
+        ):
+            profiles.return_value.get_default_profile.return_value = PolicyProfile("production", False, False, 50)
+            blocklist_class.return_value.blocked_by.return_value = None
+            cache_class.return_value.get_verified.return_value = None
+            reputation_class.return_value.get_reputation.return_value = None
+            goyathlay.main()
+
+        self.assertEqual(maintenance.is_allowed.call_count, 2)
+        approval.review.assert_called_once()
+        execution.execute.assert_not_called()
+        self.assertIn("Outside approved maintenance window", output.getvalue())
 
     def test_successful_path_cleans_approves_and_executes(self):
         output, provider, cleaner, approval, execution, _, feedback, cache, audit, reputation = self.run_cli(
@@ -91,6 +211,82 @@ class GoyathlayCliTests(unittest.TestCase):
         self.assertIn("Policy:\nALLOW", output)
         self.assertIn("Return Code: 0", output)
         self.assertIn("STDOUT:\nlistening", output)
+
+    def test_blocked_command_stops_before_approval_and_execution(self):
+        output, _, _, approval, execution, _, feedback, cache, audit, _ = self.run_cli(
+            ["remove temporary files", "exit"],
+            provider_result="rm -rf /tmp/test",
+            blocked_rule="rm -rf *",
+        )
+
+        self.assertIn(
+            "Execution Blocked\nRule:\nrm -rf *\nCommand:\nrm -rf /tmp/test",
+            output,
+        )
+        approval.review.assert_not_called()
+        execution.execute.assert_not_called()
+        feedback.review.assert_not_called()
+        cache.record_success.assert_not_called()
+        audit.append.assert_not_called()
+
+    def test_edited_command_is_rechecked_against_blocklist(self):
+        output, _, _, approval, execution, _, feedback, _, audit, _ = self.run_cli(
+            ["show files", "exit"],
+            provider_result="ls -la",
+            approval_result=(True, "rm -rf /tmp/test"),
+            blocked_rules_by_command={"rm -rf /tmp/test": "rm -rf *"},
+        )
+
+        self.assertIn("Rule:\nrm -rf *\nCommand:\nrm -rf /tmp/test", output)
+        approval.review.assert_called_once()
+        execution.execute.assert_not_called()
+        feedback.review.assert_not_called()
+        audit.append.assert_not_called()
+
+    def test_blocklist_cli_lists_adds_and_removes_rules(self):
+        manager = Mock()
+        manager.list_commands.return_value = ["rm -rf /", "mkfs"]
+        manager.add.return_value = True
+        manager.remove.return_value = True
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertTrue(goyathlay._handle_blocklist_command("blocklist", manager))
+            self.assertTrue(goyathlay._handle_blocklist_command('block add "rm -rf *"', manager))
+            self.assertTrue(goyathlay._handle_blocklist_command('block remove "rm -rf *"', manager))
+
+        self.assertIn("Blocked Commands:\n- rm -rf /\n- mkfs", output.getvalue())
+        manager.add.assert_called_once_with("rm -rf *")
+        manager.remove.assert_called_once_with("rm -rf *")
+
+    def test_profile_command_switches_active_policy(self):
+        output, _, _, _, _, _, _, _, _, _ = self.run_cli(
+            ["profile development", "show listening ports", "exit"],
+        )
+
+        self.assertIn("Current Profile: development", output)
+        self.assertIn("Profile:\ndevelopment", output)
+
+    def test_profiles_command_lists_available_profiles(self):
+        output, *_ = self.run_cli(["profiles", "exit"])
+
+        self.assertIn(
+            "Available Profiles:\n- development\n- staging\n- production\n- emergency",
+            output,
+        )
+
+    def test_production_profile_blocks_high_risk_before_approval(self):
+        output, _, _, approval, execution, _, _, _, audit, _ = self.run_cli(
+            ["remove temp files", "exit"],
+            provider_result="rm -rf /tmp/test",
+            profile_name="production",
+        )
+
+        self.assertIn("Profile:\nproduction", output)
+        self.assertIn("Decision:\nDENY", output)
+        self.assertIn("Production profile blocks high-risk commands", output)
+        approval.review.assert_not_called()
+        execution.execute.assert_not_called()
+        audit.append.assert_not_called()
 
     def test_cancel_does_not_execute(self):
         output, _, _, approval, execution, _, feedback, cache, audit, _ = self.run_cli(
@@ -205,6 +401,7 @@ class GoyathlayCliTests(unittest.TestCase):
             ["remove temp files", "exit"],
             provider_result="rm -rf /tmp/test",
             reputation_result=CommandReputation("rm -rf /tmp/test", 0, 1, 1, 0.0),
+            profile_name="production",
         )
 
         self.assertIn("Policy:\nDENY", output)
@@ -292,6 +489,12 @@ class GoyathlayCliTests(unittest.TestCase):
         inventory.resolve_target.return_value = [
             HostRecord("server01", "server01.example", 2222, "ubuntu")
         ]
+        profile_manager = Mock()
+        profile_manager.get_default_profile.return_value = PolicyProfile("staging", True, True, 25)
+        maintenance_manager = Mock()
+        maintenance_manager.is_allowed.return_value = True
+        command_blocklist = Mock()
+        command_blocklist.blocked_by.return_value = None
         output = io.StringIO()
 
         with (
@@ -303,6 +506,9 @@ class GoyathlayCliTests(unittest.TestCase):
             patch.object(goyathlay, "AuditStore", return_value=audit),
             patch.object(goyathlay, "ReputationEngine", return_value=reputation),
             patch.object(goyathlay, "HostInventory", return_value=inventory),
+            patch.object(goyathlay, "ProfileManager", return_value=profile_manager),
+            patch.object(goyathlay, "MaintenanceManager", return_value=maintenance_manager),
+            patch.object(goyathlay, "CommandBlocklist", return_value=command_blocklist),
             patch.object(goyathlay, "SSHConnector", return_value=connector),
             patch.object(goyathlay, "SSHExecutor", return_value=ssh_executor),
             patch("builtins.input", side_effect=["remote> server01 show listening ports", "exit"]),

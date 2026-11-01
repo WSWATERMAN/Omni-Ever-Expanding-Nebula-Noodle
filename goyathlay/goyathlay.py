@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Interactive, local-first Goyathlay command line application."""
 
+import shlex
+from datetime import datetime
+
 if __package__:
     from .approval import ApprovalManager
     from .command_cleaner import clean_command
@@ -17,6 +20,9 @@ if __package__:
     from .ssh.executor import SSHExecutionError, SSHExecutor
     from .inventory import HostInventory, InventoryError
     from .fanout import FanoutExecutor, HostExecutionResult
+    from .profiles import PolicyProfile, ProfileManager, ProfileNotFoundError, ProfileStoreError
+    from .blocklist import BlocklistError, CommandBlocklist
+    from .maintenance import MaintenanceError, MaintenanceManager, MaintenanceWindow
 else:  # Support: python goyathlay/goyathlay.py
     from approval import ApprovalManager
     from command_cleaner import clean_command
@@ -33,6 +39,9 @@ else:  # Support: python goyathlay/goyathlay.py
     from ssh.executor import SSHExecutionError, SSHExecutor
     from inventory import HostInventory, InventoryError
     from fanout import FanoutExecutor, HostExecutionResult
+    from profiles import PolicyProfile, ProfileManager, ProfileNotFoundError, ProfileStoreError
+    from blocklist import BlocklistError, CommandBlocklist
+    from maintenance import MaintenanceError, MaintenanceManager, MaintenanceWindow
 
 
 def _create_provider():
@@ -74,6 +83,98 @@ def _confirm_policy_override() -> bool:
 def _confirm_role_override() -> bool:
     """Require the role-specific confirmation before continuing."""
     return input("Type ROLE-OVERRIDE to continue: ").strip() == "ROLE-OVERRIDE"
+
+
+def _handle_blocklist_command(raw_command: str, blocklist: CommandBlocklist | None) -> bool:
+    """Handle local blocklist management commands; return if recognized."""
+    stripped = raw_command.strip()
+    if stripped.casefold() == "blocklist":
+        if blocklist is None:
+            print("Command blocklist is unavailable.")
+            return True
+        print("Blocked Commands:")
+        for command in blocklist.list_commands():
+            print(f"- {command}")
+        return True
+    if not stripped.casefold().startswith("block "):
+        return False
+    if blocklist is None:
+        print("Command blocklist is unavailable.")
+        return True
+    try:
+        parts = shlex.split(stripped)
+    except ValueError as exc:
+        print(f"Invalid blocklist command: {exc}")
+        return True
+    if len(parts) != 3 or parts[0].casefold() != "block" or parts[1].casefold() not in ("add", "remove"):
+        print('Usage: block add "COMMAND" | block remove "COMMAND"')
+        return True
+    try:
+        if parts[1].casefold() == "add":
+            added = blocklist.add(parts[2])
+            print("Block rule added." if added else "Block rule already exists.")
+        else:
+            removed = blocklist.remove(parts[2])
+            print("Block rule removed." if removed else "Block rule not found.")
+    except (BlocklistError, ValueError) as exc:
+        print(f"Unable to update blocklist:\n{exc}")
+    return True
+
+
+def _display_blocked_command(rule: str, command: str) -> None:
+    """Explain that a matching command is denied before approval."""
+    print("Execution Blocked")
+    print(f"Rule:\n{rule}")
+    print(f"Command:\n{command}")
+
+
+def _maintenance_allowed(manager: MaintenanceManager, profile_name: str) -> bool:
+    """Check the active local-time window and explain a denial."""
+    now = datetime.now().astimezone()
+    if manager.is_allowed(profile_name, now):
+        return True
+    print(f"Current Profile:\n{profile_name}")
+    print(f"Current Time:\n{now.strftime('%H:%M %Z').strip()}")
+    print("Execution Blocked")
+    print("Reason:\nOutside approved maintenance window")
+    return False
+
+
+def _handle_maintenance_command(raw_command: str, manager: MaintenanceManager | None) -> bool:
+    """Handle local maintenance configuration commands."""
+    stripped = raw_command.strip()
+    if not stripped.casefold().startswith("maintenance"):
+        return False
+    if manager is None:
+        print("Maintenance settings are unavailable.")
+        return True
+    try:
+        parts = shlex.split(stripped)
+        if len(parts) == 1:
+            print(f"Maintenance Windows: {'ENABLED' if manager.enabled else 'DISABLED'}")
+            windows = manager.list_windows()
+            if windows:
+                for window in windows:
+                    print(f"- {window.name}: {','.join(window.days)} {window.start}-{window.end}")
+            else:
+                print("No windows configured.")
+            return True
+        action = parts[1].casefold()
+        if action in ("enable", "disable") and len(parts) == 2:
+            manager.set_enabled(action == "enable")
+            print(f"Maintenance windows {'enabled' if action == 'enable' else 'disabled'}.")
+        elif action == "add" and len(parts) == 6:
+            window = MaintenanceWindow(parts[2], parts[3].split(","), parts[4], parts[5])
+            added = manager.add_window(window)
+            print("Maintenance window added." if added else "Maintenance window already exists.")
+        elif action == "remove" and len(parts) == 3:
+            removed = manager.remove_window(parts[2])
+            print("Maintenance window removed." if removed else "Maintenance window not found.")
+        else:
+            print("Usage: maintenance [enable|disable|add PROFILE DAYS START END|remove PROFILE]")
+    except (ValueError, TypeError, MaintenanceError) as exc:
+        print(f"Unable to update maintenance settings:\n{exc}")
+    return True
 
 
 def _parse_target(raw_prompt: str) -> tuple[str | None, str, str]:
@@ -130,12 +231,15 @@ def _display_command_policy(
     reputation: CommandReputation | None,
     policy: PolicyResult,
     target_host: str | None = None,
+    profile: PolicyProfile | None = None,
 ) -> None:
     """Display the assessed command, its history, and the policy outcome."""
     print("Generated Command:")
     print(command)
     if target_host is not None:
         print(f"\nExecution Target:\nRemote host: {target_host}")
+    if profile is not None:
+        print(f"\nProfile:\n{profile.name}")
     print(f"\nRisk Level:\n{risk_level.name}")
     print("Reasons:")
     for reason in risk_reasons or ["No known risky patterns detected."]:
@@ -146,6 +250,7 @@ def _display_command_policy(
         print(f"Failures:\n{reputation.failure_count}")
         print(f"Dangerous:\n{reputation.dangerous_count}")
     print(f"\nPolicy:\n{policy.decision.name.replace('_', ' ')}")
+    print(f"Decision:\n{policy.decision.name.replace('_', ' ')}")
     print("Policy Reasons:")
     for reason in policy.reasons or ["No policy concerns detected."]:
         print(f"- {reason}")
@@ -206,10 +311,29 @@ def main() -> None:
     except InventoryError as exc:
         host_inventory = None
         print(f"Host inventory unavailable:\n{exc}")
+    try:
+        profile_manager = ProfileManager()
+        current_profile = profile_manager.get_default_profile()
+    except ProfileStoreError as exc:
+        profile_manager = None
+        current_profile = None
+        print(f"Policy profiles unavailable:\n{exc}")
+    try:
+        blocklist = CommandBlocklist()
+    except BlocklistError as exc:
+        blocklist = None
+        print(f"Command blocklist unavailable:\n{exc}")
+    try:
+        maintenance_manager = MaintenanceManager()
+    except MaintenanceError as exc:
+        maintenance_manager = None
+        print(f"Maintenance settings unavailable:\n{exc}")
 
     print("-" * 36)
     print("GOYATHLAY")
     print("-" * 36)
+    if current_profile is not None:
+        print(f"Current Profile: {current_profile.name}")
     print("Type 'exit' or 'quit' to leave.")
 
     while True:
@@ -222,6 +346,46 @@ def main() -> None:
         if raw_prompt.casefold() in ("exit", "quit"):
             return
         if not raw_prompt:
+            continue
+        if _handle_blocklist_command(raw_prompt, blocklist):
+            continue
+        if _handle_maintenance_command(raw_prompt, maintenance_manager):
+            continue
+        command_parts = raw_prompt.split(maxsplit=1)
+        command_name = command_parts[0].casefold()
+        if command_name == "profiles" and len(command_parts) == 1:
+            if profile_manager is None:
+                print("Policy profiles are unavailable.")
+            else:
+                print("Available Profiles:")
+                for configured in profile_manager.list_profiles():
+                    print(f"- {configured.name}")
+            continue
+        if command_name == "profile":
+            if profile_manager is None:
+                print("Policy profiles are unavailable.")
+            elif len(command_parts) != 2:
+                print("Usage: profile NAME")
+            else:
+                try:
+                    profile_manager.set_default_profile(command_parts[1])
+                    current_profile = profile_manager.load_profile(command_parts[1])
+                    print(f"Current Profile: {current_profile.name}")
+                except ProfileNotFoundError as exc:
+                    print(exc)
+                except ProfileStoreError as exc:
+                    print(f"Unable to switch profile:\n{exc}")
+            continue
+        if current_profile is None:
+            print("Command blocked because no policy profile is available.")
+            continue
+        if maintenance_manager is None:
+            print("Command blocked because maintenance settings are unavailable.")
+            continue
+        if not _maintenance_allowed(maintenance_manager, current_profile.name):
+            continue
+        if blocklist is None:
+            print("Command blocked because the blocklist is unavailable.")
             continue
         try:
             target_name, prompt, cache_intent = _parse_target(raw_prompt)
@@ -271,13 +435,18 @@ def main() -> None:
                     provider = _create_provider()
                 generated_command = provider.generate_command(prompt)
                 command = clean_command(generated_command)
-            assessment = risk_engine.assess(command)
         except KeyboardInterrupt:
             print("\nExiting Goyathlay.")
             return
         except Exception as exc:
             print(f"Unable to generate command:\n{exc}")
             continue
+
+        blocked_rule = blocklist.blocked_by(command)
+        if blocked_rule is not None:
+            _display_blocked_command(blocked_rule, command)
+            continue
+        assessment = risk_engine.assess(command)
 
         reputation = _get_reputation(reputation_engine, command)
         authorization = _authorize_command(rbac_engine, user_context, assessment.level)
@@ -287,9 +456,16 @@ def main() -> None:
         policy = policy_engine.evaluate(
             assessment.level,
             reputation.score if reputation is not None else None,
+            current_profile,
         )
         _display_command_policy(
-            command, assessment.level, assessment.reasons, reputation, policy, target_display
+            command,
+            assessment.level,
+            assessment.reasons,
+            reputation,
+            policy,
+            target_display,
+            current_profile,
         )
         if policy.decision is PolicyDecision.DENY:
             print("Execution blocked.")
@@ -311,8 +487,12 @@ def main() -> None:
             print("Command cancelled.")
             continue
 
-        final_assessment = risk_engine.assess(approved_command)
         if approved_command != command:
+            blocked_rule = blocklist.blocked_by(approved_command)
+            if blocked_rule is not None:
+                _display_blocked_command(blocked_rule, approved_command)
+                continue
+            final_assessment = risk_engine.assess(approved_command)
             final_reputation = _get_reputation(reputation_engine, approved_command)
             final_authorization = _authorize_command(
                 rbac_engine, user_context, final_assessment.level
@@ -323,6 +503,7 @@ def main() -> None:
             final_policy = policy_engine.evaluate(
                 final_assessment.level,
                 final_reputation.score if final_reputation is not None else None,
+                current_profile,
             )
             _display_command_policy(
                 approved_command,
@@ -331,6 +512,7 @@ def main() -> None:
                 final_reputation,
                 final_policy,
                 target_display,
+                current_profile,
             )
             if final_policy.decision is PolicyDecision.DENY:
                 print("Execution blocked.")
@@ -343,7 +525,11 @@ def main() -> None:
                 continue
             reputation = final_reputation
             policy = final_policy
-        assessment = final_assessment
+            assessment = final_assessment
+
+        # Approval and TOFU prompts can consume time; recheck at the execution boundary.
+        if not _maintenance_allowed(maintenance_manager, current_profile.name):
+            continue
 
         ssh_client = None
         fanout_results: list[HostExecutionResult] | None = None
